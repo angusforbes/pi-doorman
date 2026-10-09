@@ -190,3 +190,9 @@ test("review fixes 2: paste end marker split past the cap, resize keeps the plac
   const s = new Scrollback(); s.add(Array.from({ length: 300 }, (_, i) => `l${i}`).join("\n"), 60); s.scrollBy(100, 60, 13); const was = s.window(60, 13).at(-1);
   s.setWidth(40); assert.equal(s.window(40, 13).at(-1), was); assert.ok(s.offset > 0);
 });
+import { notifyArgs } from "../src/notify.mjs";
+test("a notification never offers or performs Approve", () => {
+  const e = { id: "n1", code: "abcd", summary: "Request: allow x" };
+  for (const actions of [true, false]) { const a = notifyArgs(e, { actions }).join(" "); assert.ok(!/approve=|--action=approve/i.test(a)); assert.match(a, /pi-doorman review/); assert.equal(/--action=deny=Deny/.test(a), actions); }
+  assert.ok(!notifyArgs({ ...e, summary: "x".repeat(2000) }, { actions: true }).join(" ").includes("--action=approve"));
+});

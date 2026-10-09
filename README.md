@@ -10,7 +10,7 @@ It serves any agent (Claude Code, Codex, Cursor, Pi) through an MCP server, a CL
 - Inner guide: `guide/sandbox-guide` (standard-library Python) and a skill text explain a failure from inside (a missing path, a read-only share, a 403).
 - Doorman service (host side): rules first (is this path shared, is this domain allowed), then optionally one stateless model call through Pi, then a queue of drafted requests.
 - Channel: a drop-box. The sandbox writes JSON files to an outbox and reads replies from a read-only inbox; the host service identifies the sandbox by the folder, never by the message. Size and rate limits apply.
-- Review: a desktop notification with Approve / Deny, or `pi-doorman review NAME` in a terminal. Every request shows a binding code. An approval runs only a runner you configured for that kind.
+- Review: a desktop notification (Deny and a pointer to the review only: a notification never approves), or `pi-doorman review NAME` in a terminal. Every request shows a binding code. An approval runs only a runner you configured for that kind.
 - Request kinds are plug-ins. Core ships `ask`, `request` and `draft`; add more with `"plugins": ["/path/kind.mjs"]` in the sandbox's config.json.
 - Modes (`doorman-strict`, `doorman-safe`, `doorman-open`) and visibility (`strict`, `safe`, `observer`, `developer`) are shared vocabulary: `src/modes.mjs` resolves them, and request-kind plug-ins and host integrations decide what each mode adds (the built-in `request` and `draft` kinds always wait for a human whatever the mode). `pi-doorman view NAME [--write]` is the observer / developer window for a Doorman running as a Pi RPC process whose events go through `pi-doorman log`; it locks whenever typing would not be sent.
 

@@ -1,27 +1,26 @@
 // Notifier interface: notifier({ decide, reviewCmd }) -> (entry) => void. An adapter shows the owner a request and, where the
-// platform can, offers Approve / Deny buttons. `pi-doorman review NAME` always works, so every adapter degrades to a plain
+// platform can, a Deny button. `pi-doorman review NAME` always works, so every adapter degrades to a plain
 // "run pi-doorman review" note. Adapters: freedesktop (Linux, over D-Bus via notify-send) now; macos and windows come later.
 import { spawn, spawnSync } from "node:child_process";
 import os from "node:os";
 
 const has = (c) => spawnSync("sh", ["-c", `command -v ${c}`]).status === 0;
 // Does the running notification daemon support action buttons? (freedesktop "actions" capability; ask the server over D-Bus.)
-export function freedesktopHasActions() {
-  if (!has("gdbus")) return false;
-  const r = spawnSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.GetCapabilities"], { encoding: "utf8" });
-  return r.status === 0 && /'actions'/.test(r.stdout);
+// The arguments for one notification. A notification can NEVER approve (an accidental tap or a stale toast must not be able to):
+// it offers only Deny (one click, the safe choice) where the daemon supports buttons, and always points at the full review,
+// where approving is typed with the binding code after the whole request is shown.
+export function notifyArgs(e, { actions = false, reviewCmd = "pi-doorman review" } = {}) {
+  const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); // notification daemons may render markup
+  const whole = e.summary.length <= 600;
+  const body = esc(whole ? e.summary : `${e.summary.slice(0, 300)}…`) + `\n\nbinding code ${e.code}\nApprove only in the full review: ${esc(reviewCmd)}`;
+  return ["--app-name=pi-doorman", ...(actions ? ["--wait", "--action=deny=Deny"] : []), `Doorman request ${e.code}`, body];
 }
 export function freedesktop({ decide, reviewCmd = "pi-doorman review", actions = freedesktopHasActions() }) {
   if (!has("notify-send")) return null;
   return (e) => {
-    // Approve / Deny only when the notification shows the WHOLE request; a longer one just points at the full review.
-    const whole = e.summary.length <= 600, buttons = actions && whole;
-    const esc = (t) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); // notification daemons may render markup
-    const body = esc(whole ? e.summary : `${e.summary.slice(0, 300)}…\n(too long to approve from a notification)`) + `\n\nbinding code ${e.code}` + (buttons ? "" : `\nReview in full: ${esc(reviewCmd)}`);
-    const args = ["--app-name=pi-doorman", ...(buttons ? ["--wait", "--action=approve=Approve", "--action=deny=Deny"] : []), `Doorman request ${e.code}`, body];
-    const p = spawn("notify-send", args, { stdio: ["ignore", "pipe", "ignore"], detached: true }); let o = "";
+    const p = spawn("notify-send", notifyArgs(e, { actions, reviewCmd }), { stdio: ["ignore", "pipe", "ignore"], detached: true }); let o = "";
     p.on("error", () => {}); p.stdout.on("data", (d) => (o += d));
-    p.on("close", () => { const a = o.trim(); if (a === "approve" || a === "deny") decide(e.id, a === "approve", e.code); });
+    p.on("close", () => { if (o.trim() === "deny") decide(e.id, false); }); // only a denial is ever decided from a notification
     p.unref();
   };
 }
