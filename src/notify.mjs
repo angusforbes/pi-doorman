@@ -6,6 +6,13 @@ import os from "node:os";
 
 const has = (c) => spawnSync("sh", ["-c", `command -v ${c}`]).status === 0;
 // Does the running notification daemon support action buttons? (freedesktop "actions" capability; ask the server over D-Bus.)
+// Does the running notification daemon support action buttons? (freedesktop "actions" capability; ask the server over D-Bus.)
+export function freedesktopHasActions() {
+  if (!has("gdbus")) return false;
+  const r = spawnSync("gdbus", ["call", "--session", "--dest", "org.freedesktop.Notifications", "--object-path", "/org/freedesktop/Notifications", "--method", "org.freedesktop.Notifications.GetCapabilities"], { encoding: "utf8" });
+  return r.status === 0 && /'actions'/.test(r.stdout);
+}
+
 // The arguments for one notification. A notification can NEVER approve (an accidental tap or a stale toast must not be able to):
 // it offers only Deny (one click, the safe choice) where the daemon supports buttons, and always points at the full review,
 // where approving is typed with the binding code after the whole request is shown.

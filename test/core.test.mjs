@@ -196,3 +196,8 @@ test("a notification never offers or performs Approve", () => {
   for (const actions of [true, false]) { const a = notifyArgs(e, { actions }).join(" "); assert.ok(!/approve=|--action=approve/i.test(a)); assert.match(a, /pi-doorman review/); assert.equal(/--action=deny=Deny/.test(a), actions); }
   assert.ok(!notifyArgs({ ...e, summary: "x".repeat(2000) }, { actions: true }).join(" ").includes("--action=approve"));
 });
+import { freedesktop, freedesktopHasActions } from "../src/notify.mjs";
+test("the default freedesktop adapter builds without throwing (no real notification is sent)", () => {
+  assert.equal(typeof freedesktopHasActions(), "boolean");
+  const f = freedesktop({ decide() {} }); assert.ok(f === null || typeof f === "function");
+});
