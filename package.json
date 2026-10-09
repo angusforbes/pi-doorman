@@ -1,0 +1,16 @@
+{
+  "name": "pi-doorman",
+  "version": "0.1.0",
+  "description": "A doorman for sandboxed agents: explains the sandbox's walls from a host card, drafts requests for the owner to approve, never gives a way around the walls. Works with any agent (MCP, CLI, hooks); built on Pi.",
+  "type": "module",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "git+https://github.com/angusforbes/pi-doorman.git" },
+  "keywords": ["pi-package", "pi", "sandbox", "mcp", "agents", "security"],
+  "bin": { "pi-doorman": "bin/pi-doorman.mjs" },
+  "pi": { "extensions": ["./extension/pi-doorman.ts"] },
+  "files": ["bin", "src", "guide", "prompts", "extension", "README.md", "LICENSE"],
+  "engines": { "node": ">=20" },
+  "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
+  "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
+  "scripts": { "test": "node --test test/" }
+}

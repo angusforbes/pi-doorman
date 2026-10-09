@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""sandbox-guide: the inner guide (layer 1 of the Doorman design, J306).
+
+Runs INSIDE a sandbox and explains its walls from what it can see there: which host folders are shared (and
+read-only or writable), that the network goes through the sandbox's policy proxy, which tools exist inside.
+It never claims to know the host: a path or tool missing here may well exist there.
+
+  sandbox-guide                 overview: shares, network, tools, host card
+  sandbox-guide why PATH        is this path shared? read-only?
+  sandbox-guide why URL         can I reach it? was it blocked by the network policy?
+  sandbox-guide why COMMAND     is the tool installed in here?
+  sandbox-guide card            print this sandbox's card (the sandbox-card format, Markdown)
+  sandbox-guide path|url|command X   the same, saying what X is
+
+Works with no particular host software. Standard library only.
+"""
+import os, re, shutil, socket, subprocess, sys, urllib.parse
+
+SANDBOX = os.environ.get("SANDBOX_NAME") or socket.gethostname()
+def _safe(u):  # (review #9) never show credentials in a proxy URL
+    p = urllib.parse.urlsplit(u or "")
+    return urllib.parse.urlunsplit((p.scheme, p.hostname + (f":{p.port}" if p.port else ""), "", "", "")) if p.hostname else ""
+PROXY = _safe(os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or "")
+CARD_PLACES = ["~/.sandbox/host-card.md"]  # a read-only share or pasted in; never the writable workspace  # where a host card is looked for
+HIDDEN = set()  # filled in main(): placeholder mounts aren't shares
+SKIP = ("/proc", "/sys", "/dev", "/run", "/etc/", "/tmp", "/var/lib/docker")
+
+def mounts():
+    """Host shares visible here: virtiofs mounts (sbx) and bind mounts from the host, [(target, mode)]."""
+    out = []
+    try:
+        for line in open("/proc/mounts"):
+            dev, target, fstype, opts = line.split()[:4]
+            target = target.replace("\\040", " ")
+            if fstype not in ("virtiofs", "9p", "fuse.sshfs") or target.startswith(SKIP) or target == "/mnt/host" or target in HIDDEN:
+                continue
+            out.append((target, "ro" if "ro" in opts.split(",") else "rw"))
+    except OSError:
+        pass
+    return out
+
+def hidden_targets():
+    """Mount targets covered by the host's empty placeholders (hidden gitignored files, J307)."""
+    out = set()
+    try:
+        for line in open("/proc/self/mountinfo"):
+            f = line.split()
+            if re.search(r"/sandboxes/[^/]+/empty/(file|dir)$", f[3]):
+                out.add(f[4].replace("\\040", " "))
+    except OSError:
+        pass
+    return out
+
+def card_ro():
+    """Read-only paths per the host card (the host's own word: holds even if the guest unmounted something)."""
+    out = []
+    c = host_card()
+    if c:
+        try:
+            for l in open(c):
+                m = re.match(r"^\|\s*ro\s*\|\s*(/\S+)\s*\|", l)
+                if m: out.append(m.group(1))
+        except OSError:
+            pass
+    return out
+
+def share_for(p):
+    best = None
+    for t, mode in mounts():
+        if p == t or p.startswith(t.rstrip("/") + "/"):
+            if not best or len(t) > len(best[0]):
+                best = (t, mode)
+    return best
+
+def workspace():
+    for t, mode in mounts():
+        if mode == "rw" and not t.startswith("/mnt/host"):
+            return t
+    return os.getcwd()
+
+def host_card():
+    for c in CARD_PLACES:
+        p = os.path.expanduser(c.format(ws=workspace()))
+        if os.path.isfile(p):
+            return p
+    return None
+
+def why_path(arg):
+    p = os.path.abspath(os.path.expanduser(arg))
+    s = share_for(p)
+    hid = [t for t in hidden_targets() if p == t or p.startswith(t.rstrip("/") + "/")]
+    if hid:
+        return (f"{p} is hidden by the host owner: a gitignored file or folder in a shared project shows as empty here "
+                f"(on purpose; it may hold secrets). Don't try to get around it. If you need it, ask the host owner to show it.")
+    if s and s[0] == os.path.expanduser("~/.sandbox"):
+        return f"{p} is the host card's folder, written by the host and read-only in here."
+    if s and not s[0].startswith("/mnt/host"):
+        rest = "it exists" if os.path.exists(p) else "but nothing is at this path inside it"
+        ro_card = any(p == t or p.startswith(t.rstrip("/") + "/") for t in card_ro())
+        ro = " READ-ONLY: writes are refused by the sandbox (on the host side), even with sudo." if s[1] == "ro" or ro_card else " Writable: changes land on the host."
+        return f"{p} is inside the host share {s[0]} ({rest}).{ro}"
+    if os.path.exists(p):
+        return f"{p} exists inside this sandbox, outside the detected host shares: most likely the sandbox's own disk, which the host doesn't see. (Detection uses /proc/mounts; a bind mount or symlink could fool it.)"
+    par = os.path.dirname(p.rstrip("/"))
+    near = [t for t, _ in mounts() if not t.startswith("/mnt/host") and (t == par or t.startswith(par.rstrip("/") + "/"))]  # (review #8: whole components)
+    hint = f" Nearby shares: {', '.join(near)}." if near else ""
+    if host_card():
+        return (f"{p} isn't here: not shared into this sandbox (the host card {host_card()} lists what is). "
+                f"That says nothing about the host. Ask the host (the Doorman) whether it exists and whether it can be shared.")
+    return (f"{p} isn't here. It is not shared into this sandbox, so this says nothing about the host: the host may well have it. "
+            f"This sandbox is like a separate machine; only the folders listed by 'sandbox-guide' are shared.{hint} "
+            f"Next step: ask the host (your Doorman, e.g. `pi-doorman ask '...'`, or your host contact) whether it exists and whether it can be shared.")
+
+def why_url(arg):
+    u = arg if "://" in arg else "https://" + arg
+    host = urllib.parse.urlparse(u).hostname or arg
+    if urllib.parse.urlsplit(u).scheme not in ("http", "https"):
+        return f"Only http and https addresses can be checked ({arg})."
+    try:
+        r = subprocess.run(["curl", "-sS", "--proto", "=http,https", "-o", "/dev/stderr", "-w", "%{http_code}", "--max-time", "10", u],
+                           capture_output=True, text=True, timeout=15)
+        code, body = r.stdout.strip(), r.stderr[:400]
+    except Exception as e:
+        return f"Couldn't test {host}: {e}"
+    if "Blocked by org policy" in body:  # (review #6: only the policy's own marker counts)
+        return (f"{host} is BLOCKED by the sandbox's network policy (the proxy answered {code}, \"Blocked by org policy\"). "
+                f"Nothing inside can change that: the allowlist is managed centrally. Next step: use an allowed source "
+                f"(e.g. a mirror or the package registry), or ask the host owner to request the domain."
+                + (f" The full allowlist is in {os.path.dirname(host_card())}/net-allowlist.md (see the host card's Network section)." if host_card() else ""))
+    if code == "403":
+        return f"{host} answered 403 without the policy's marker: probably the site itself refusing, not the sandbox. Unsure; ask if it matters."
+    if code.startswith(("2", "3")):
+        return f"{host} is reachable (HTTP {code})."
+    if code in ("000", ""):
+        return f"{host} didn't answer (no HTTP reply; DNS or connect failure). Behind the policy proxy, unknown names also fail this way."
+    return f"{host} answered HTTP {code}: reachable, the error is the server's own."
+
+def why_cmd(arg):
+    w = shutil.which(arg)
+    if w:
+        return f"{arg} is installed here ({w})."
+    sudo = shutil.which("sudo") and shutil.which("apt-get")
+    return (f"{arg} isn't installed inside this sandbox. Host tools aren't visible here (separate machine), so the host may have it. "
+            + ("You have sudo and apt-get: 'sudo apt-get install' may work if the package source is allowed by the network policy. " if sudo else "")
+            + "If it's a desktop tool (a window manager, a clipboard, notifications), it can't work in here at all: ask the host to do it.")
+
+def overview():
+    lines = [f"Sandbox {SANDBOX}: a separate machine. The host's files, tools and processes are NOT visible, except these shares:"]
+    for t, mode in mounts():
+        if not t.startswith("/mnt/host"):
+            lines.append(f"  {mode}  {t}" + ("   (read-only: writes refused, even with sudo)" if mode == "ro" else ""))
+    lines.append(f"Network: every request goes through the policy proxy {PROXY or '(none set)'}; blocked domains answer 403 'Blocked by org policy'.")
+    tools = [t for t in ("git", "gh", "node", "python3", "docker", "curl", "apt-get", "sudo") if shutil.which(t)]
+    lines.append(f"Tools inside: {', '.join(tools)}. Desktop tools (notify-send, a real clipboard) are the host's.")
+    c = host_card()
+    lines.append(f"Host card: {c}" if c else "Host card: none yet. Ask your host contact: 'would you build us a host card?' (format: see the sandbox-guide skill).")
+    if c:  # J325: the Doorman mode for web research, as the host card states it
+        try:
+            m = re.search(r"^Doorman mode: (doorman-[a-z]+)", open(c).read(), re.M)
+            if m:
+                lines.append(f"Web research: ask your Doorman for research (Doorman mode: {m.group(1)}; the host card's Web research section says what that means).")
+        except OSError:
+            pass
+    lines.append("Ask: sandbox-guide why PATH | URL | COMMAND")
+    return "\n".join(lines)
+
+def card():
+    m = [f"| {mode} | {t} |" for t, mode in mounts() if not t.startswith("/mnt/host")]
+    model = ""
+    try:
+        import json
+        s = json.load(open(os.path.expanduser("~/.pi/agent/settings.json")))
+        model = f"{s.get('defaultProvider','')}/{s.get('defaultModel','')}"
+    except Exception:
+        pass
+    osname = ""
+    try:
+        osname = re.search(r'PRETTY_NAME="([^"]+)"', open("/etc/os-release").read()).group(1)
+    except Exception:
+        pass
+    tools = [t for t in ("git", "gh", "node", "python3", "docker", "curl", "apt-get", "sudo", "pi") if shutil.which(t)]
+    return "\n".join([
+        "# Sandbox card", "", "card: sandbox-card/1", f"sandbox: {SANDBOX}", f"system: {osname}", f"user: {os.environ.get('USER') or __import__('getpass').getuser()} (sudo installed: {'yes' if shutil.which('sudo') else 'no'})",
+        f"model: {model or 'unknown'}", "purpose: (filled in by the sandbox's owner or its supervising agent)", "owner: (filled in)", "",
+        "## Shares", "", "| mode | path |", "|------|------|", *m, "",
+        "## Network", "", f"proxy: {PROXY or 'none'}", "policy: central allowlist; blocked domains answer 403 'Blocked by org policy'", "",
+        "## Tools", "", ", ".join(tools), "",
+        "## Withheld", "", "Secrets, the agents' conversations and files outside the shares above are not described.",
+    ])
+
+def main(a):
+    HIDDEN.update(hidden_targets())
+    if not a:
+        print(overview()); return
+    if a[0] == "card":
+        print(card()); return
+    if a[0] in ("path", "url", "command") and len(a) > 1:  # (review #5: explicit selectors)
+        print({"path": why_path, "url": why_url, "command": lambda x: why_cmd(x.split()[0])}[a[0]](" ".join(a[1:]))); return
+    if a[0] == "why" and len(a) > 1:
+        x = " ".join(a[1:])
+        if re.match(r"^[a-z][a-z0-9+.-]*://", x, re.I):  # any scheme: why_url only probes http(s)
+            print(why_url(x))
+        elif x.startswith(("/", "~", ".")) or "/" in x or os.path.exists(x) or re.search(r"\.(md|txt|py|js|mjs|ts|json|sh|toml|ya?ml)$", x, re.I):
+            print(why_path(x))
+        elif re.match(r"^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?$", x, re.I):
+            print(why_url(x))
+        else:
+            print(why_cmd(x.split()[0]))
+        return
+    print(__doc__.strip())
+
+if __name__ == "__main__":
+    main(sys.argv[1:])
