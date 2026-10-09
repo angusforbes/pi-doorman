@@ -84,7 +84,7 @@ const unitIsActive = (name) => { try { execFileSync("systemctl", ["--user", "is-
 // ---- scrollback (pure, tested): wrapping never cuts a line, the model keeps the conversation and a viewport offset.
 export function wrapText(text, width) {
   const w = Math.max(1, width), rows = [];
-  for (const line of String(text).split("\n")) {
+  for (const line of String(text).replace(/\t/g, "    ").split("\n")) {
     let cur = "", n = 0;
     for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur) { rows.push(cur); cur = ""; n = 0; } cur += x.segment; n += g; }
     rows.push(cur);
@@ -94,10 +94,19 @@ export function wrapText(text, width) {
 export class Scrollback {
   constructor(max = 3000) { this.entries = []; this.max = max; this.offset = 0; this.unseen = 0; this.w = 0; this.cache = []; }
   rowsFor(i, width) { return (this.cache[i] ??= wrapText(this.entries[i], width)); }
-  all(width) { if (width !== this.w) { this.w = width; this.cache = []; } const r = []; for (let i = 0; i < this.entries.length; i++) r.push(...this.rowsFor(i, width)); return r; }
+  all(width) { this.setWidth(width); const r = []; for (let i = 0; i < this.entries.length; i++) for (const row of this.rowsFor(i, width)) r.push(row); return r; }
+  // A new width re-wraps everything; while scrolled up, the view stays anchored on the same entry (not the same row number).
+  setWidth(width) {
+    if (width === this.w) return;
+    let anchor = -1;
+    if (this.offset > 0 && this.w > 0) { let end = 0; for (let i = 0; i < this.entries.length; i++) end += this.rowsFor(i, this.w).length; let at = end - this.offset, cum = 0; for (let i = 0; i < this.entries.length; i++) { cum += this.rowsFor(i, this.w).length; if (cum >= at) { anchor = i; break; } } }
+    this.w = width; this.cache = [];
+    if (anchor >= 0) { let total = 0, upto = 0; for (let i = 0; i < this.entries.length; i++) { const n = this.rowsFor(i, width).length; total += n; if (i <= anchor) upto = total; } this.offset = total - upto; }
+  }
   add(text, width) { // a new entry: the view stays where it is while scrolled up (and counts what's new)
-    const before = this.offset > 0 ? wrapText(text, width).length : 0;
-    this.entries.push(String(text)); if (this.entries.length > this.max) { this.entries.shift(); this.cache.shift(); }
+    this.setWidth(width);
+    const t = String(text).slice(0, 20000), before = this.offset > 0 ? wrapText(t, width).length : 0;
+    this.entries.push(t); if (this.entries.length > this.max) { this.entries.shift(); this.cache.shift(); }
     if (this.offset > 0) { this.offset += before; this.unseen++; }
   }
   clamp(width, height) { const total = this.all(width).length; this.offset = Math.max(0, Math.min(this.offset, Math.max(0, total - height))); }
@@ -110,16 +119,26 @@ export const statusText = (offset, unseen) => (offset > 0 ? `↑ scrolled · End
 
 // Keys from the terminal, as a persistent parser (an escape sequence may arrive split across chunks). Returns events.
 export class KeyParser {
-  constructor() { this.st = 0; this.seq = ""; }
+  constructor() { this.st = 0; this.seq = ""; this.paste = null; }
   feed(chunk) {
     const ev = [];
-    for (const c of chunk) {
-      if (this.st === 0) { if (c === "\x1b") { this.st = 1; this.seq = ""; } else if (c === "\x03" || c === "\x04") ev.push({ k: "quit" }); else if (c === "\r" || c === "\n") ev.push({ k: "enter" }); else if (c === "\x7f" || c === "\b") ev.push({ k: "backspace" }); else if (c >= " ") ev.push({ k: "char", c }); continue; }
-      if (this.st === 1) { if (c === "[") this.st = 2; else if (c === "O") this.st = 3; else this.st = 0; continue; }
+    if (this.paste !== null) { // bracketed paste: literal text up to the end marker, never keys (a paste can't press Enter or scroll)
+      this.paste += chunk; const i = this.paste.indexOf("\x1b[201~");
+      if (i < 0) { if (this.paste.length > 20000) this.paste = this.paste.slice(0, 20000); return ev; }
+      const text = this.paste.slice(0, i), rest = this.paste.slice(i + 6); this.paste = null;
+      ev.push({ k: "paste", text }); return ev.concat(this.feed(rest));
+    }
+    for (let n = 0; n < chunk.length; n++) {
+      const c = chunk[n];
+      if (c === "\x03" || c === "\x04") { this.st = 0; this.seq = ""; ev.push({ k: "quit" }); continue; } // quit always works, even after a stray ESC
+      if (this.st === 1 && c !== "[" && c !== "O") this.st = 0; // a stray ESC doesn't swallow the next key
+      if (this.st === 0) { if (c === "\x1b") { this.st = 1; this.seq = ""; } else if (c === "\r" || c === "\n") ev.push({ k: "enter" }); else if (c === "\x7f" || c === "\b") ev.push({ k: "backspace" }); else if (c >= " ") ev.push({ k: "char", c }); continue; }
+      if (this.st === 1) { this.st = c === "[" ? 2 : 3; continue; }
       if (this.st === 3) { this.st = 0; if (c === "H") ev.push({ k: "home" }); else if (c === "F") ev.push({ k: "end" }); continue; } // SS3: arrows etc. ignored
       this.seq += c; // CSI: parameters until a final byte @-~
       if (/[@-~]/.test(c)) {
         const q = this.seq; this.st = 0; this.seq = "";
+        if (q === "200~") { this.paste = ""; return ev.concat(this.feed(chunk.slice(n + 1))); }
         const mouse = q.match(/^<(\d+);\d+;\d+[Mm]$/);
         if (mouse) { const b = Number(mouse[1]); if (q.endsWith("M") && (b & 64)) ev.push({ k: (b & 1) ? "wheeldown" : "wheelup" }); continue; }
         if (q === "5~") ev.push({ k: "pgup" }); else if (q === "6~") ev.push({ k: "pgdn" });
@@ -131,6 +150,13 @@ export class KeyParser {
   }
 }
 
+// The header that fits: the lock and its reason are never the part that gets clipped.
+export function headerFit(label, write, lock, w) {
+  const full = headerText(label, write, lock); if (cells(full) + 1 <= w) return full;
+  const m = write ? "DEVELOPER" : "OBSERVER", alt = `🚪 ${m}${lock ? ` · 🔒 ${lock}` : " · ✎ typing on"}`; if (cells(alt) + 1 <= w) return alt;
+  return lock ? `🔒 ${lock}` : `🚪 ${m}`;
+}
+
 function view(name, write) {
   const d = stateDir(name), f = path.join(d, "events.jsonl"), fifo = path.join(d, "input.fifo"), sf = path.join(d, "status.json");
   const label = process.env.PI_DOORMAN_LABEL || name, bg = rgbOf(worldHex());
@@ -140,11 +166,11 @@ function view(name, write) {
   let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, started = false;
   const sb = new Scrollback();
   const bar = (txt) => { const w = W(); let t = clipCells(` ${txt}`, w); t += " ".repeat(Math.max(0, w - cells(t))); return `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${t}\x1b[0m`; };
-  const prompt = () => { const pre = lock ? `🔒 (${lock}) ${buf ? "held: " : ""}` : "you> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
+  const prompt = () => { const pre = clipCells(lock ? `🔒 ${lock}${buf ? " · held: " : ""}` : "you> ", Math.floor(W() / 2)); return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
   // One repaint writes everything: pinned header, the wrapped conversation viewport, a status line, the input line (cursor last).
   const paint = () => {
     if (!started) return;
-    const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerText(label, write, lock))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
+    const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerFit(label, write, lock, W()))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
     for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${rows[i - (VH() - rows.length)] ?? ""}`; // short histories sit at the bottom
     o += `\x1b[${Hh() - 1};1H\x1b[2K\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`;
     o += `\x1b[${Hh()};1H\x1b[2K${clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", w - 1)}\x1b[?25h`;
@@ -174,15 +200,16 @@ function view(name, write) {
       let i; while ((i = rbuf.indexOf("\n")) >= 0) { const line = rbuf.slice(0, i); rbuf = rbuf.slice(i + 1); if (skipFirst) { skipFirst = false; continue; } try { const r = render(JSON.parse(line)); if (r) sb.add(plain(r), W()); } catch { /* */ } }
     } finally { fs.closeSync(fd); }
   };
-  const mouse = (on) => P(`\x1b[?1000${on ? "h" : "l"}\x1b[?1006${on ? "h" : "l"}`);
+  const mouse = (on) => P(`\x1b[?1000${on ? "h" : "l"}\x1b[?1006${on ? "h" : "l"}\x1b[?2004${on ? "h" : "l"}`);
   const quit = () => { mouse(false); P("\x1b[?25h\x1b[2J\x1b[H"); process.exit(0); };
-  process.on("SIGTERM", quit); process.on("SIGHUP", quit);
+  process.on("SIGTERM", quit); process.on("SIGHUP", quit); process.on("SIGINT", quit);
+  process.on("exit", () => { try { mouse(false); } catch { /* */ } }); process.on("uncaughtException", (e) => { try { mouse(false); P("\x1b[?25h"); } catch { /* */ } console.error(e); process.exit(1); });
   P("\x1b[2J"); mouse(true);
   pump();
   sb.add(write ? "Developer mode: what you type is marked as yours and reaches only the Doorman. It can't approve or run anything, and nothing you type goes to the sandbox." : "Observer mode: read-only. Nothing you do here reaches the Doorman.", W());
   started = true; refresh(); paint();
   setInterval(() => { pump(); refresh(); paint(); }, 500);
-  process.stdout.on("resize", () => { P("\x1b[2J"); paint(); });
+  process.stdout.on("resize", () => { sb.setWidth(W()); P("\x1b[2J"); paint(); });
   const send = () => {
     const pl = promptLine(buf);
     if (!pl) { buf = ""; return; }
@@ -204,6 +231,7 @@ function view(name, write) {
       else if (e.k === "enter") send();
       else if (e.k === "backspace") buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join("");
       else if (e.k === "char") buf += e.c;
+      else if (e.k === "paste") buf += plain(e.text).replace(/\s+/g, " ");
     }
     paint();
   });

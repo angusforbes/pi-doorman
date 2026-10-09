@@ -173,3 +173,14 @@ test("keys: wheel, PgUp/PgDn, Shift+arrows, Home/End, split sequences, typing", 
   assert.deepEqual(kinds("\x1b[5~\x1b[6~\x1b[1;2A\x1b[1;2B"), ["pgup", "pgdn", "sup", "sdown"]); assert.deepEqual(kinds("\x1b[H\x1b[F\x1b[1~\x1b[4~"), ["home", "end", "home", "end"]);
   assert.deepEqual(kinds("\x1b"), []); assert.deepEqual(kinds("[A"), []); assert.deepEqual(kinds("hi\r\x7f\x1bOAx"), ["charh", "chari", "enter", "backspace", "charx"]);
 });
+import { headerFit } from "../src/view.mjs";
+test("review fixes: huge entry, paste is text, stray ESC, resize anchor, tabs, header fit", () => {
+  const s = new Scrollback(); s.add("x\n".repeat(140000), 60); assert.ok(s.window(60, 10).length === 10);
+  const k = new KeyParser(), kk = (x) => k.feed(x).map((e) => e.k + (e.text ?? e.c ?? ""));
+  assert.deepEqual(kk("\x1b[200~line1\nline2\x1b[5~\x1b[201~"), ["pasteline1\nline2\x1b[5~"]); assert.deepEqual(kk("\x1b[200~a"), []); assert.deepEqual(kk("b\x1b[201~z"), ["pasteab", "charz"]);
+  assert.deepEqual(kk("\x1bq"), ["charq"]); assert.deepEqual(kk("\x1b\x03"), ["quit"]);
+  const r = new Scrollback(); for (let i = 0; i < 40; i++) r.add(`entry ${i} ` + "word ".repeat(i % 7), 40); r.scrollBy(12, 40, 6); const before = r.window(40, 6).at(-1).slice(0, 8);
+  r.setWidth(20); assert.ok(r.window(20, 6).some((x) => x.startsWith(before.slice(0, 8))) || r.window(20, 6).at(-1).startsWith("entry"));
+  assert.equal(wrapText("a\tb", 10).join(""), "a    b");
+  assert.match(headerFit("Door-1", true, "busy answering the sandbox's request", 30), /🔒/); assert.match(headerFit("D", true, "", 80), /DEVELOPER MODE/);
+});
