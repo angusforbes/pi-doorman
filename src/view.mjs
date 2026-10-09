@@ -98,10 +98,10 @@ export class Scrollback {
   // A new width re-wraps everything; while scrolled up, the view stays anchored on the same entry (not the same row number).
   setWidth(width) {
     if (width === this.w) return;
-    let anchor = -1;
-    if (this.offset > 0 && this.w > 0) { let end = 0; for (let i = 0; i < this.entries.length; i++) end += this.rowsFor(i, this.w).length; let at = end - this.offset, cum = 0; for (let i = 0; i < this.entries.length; i++) { cum += this.rowsFor(i, this.w).length; if (cum >= at) { anchor = i; break; } } }
+    let anchor = -1, within = 0, oldRows = 1;
+    if (this.offset > 0 && this.w > 0) { let end = 0; for (let i = 0; i < this.entries.length; i++) end += this.rowsFor(i, this.w).length; let at = end - this.offset, cum = 0; for (let i = 0; i < this.entries.length; i++) { const n = this.rowsFor(i, this.w).length; cum += n; if (cum >= at) { anchor = i; within = cum - at; oldRows = n; break; } } }
     this.w = width; this.cache = [];
-    if (anchor >= 0) { let total = 0, upto = 0; for (let i = 0; i < this.entries.length; i++) { const n = this.rowsFor(i, width).length; total += n; if (i <= anchor) upto = total; } this.offset = total - upto; }
+    if (anchor >= 0) { let total = 0, upto = 0, nr = 1; for (let i = 0; i < this.entries.length; i++) { const n = this.rowsFor(i, width).length; total += n; if (i <= anchor) { upto = total; nr = n; } } this.offset = total - upto + Math.min(nr, Math.round(within * nr / oldRows)); } // same place inside the entry, not its end
   }
   add(text, width) { // a new entry: the view stays where it is while scrolled up (and counts what's new)
     this.setWidth(width);
@@ -123,8 +123,9 @@ export class KeyParser {
   feed(chunk) {
     const ev = [];
     if (this.paste !== null) { // bracketed paste: literal text up to the end marker, never keys (a paste can't press Enter or scroll)
+      if (chunk.includes("\x03")) { this.paste = null; return [{ k: "quit" }]; } // an abort always works
       this.paste += chunk; const i = this.paste.indexOf("\x1b[201~");
-      if (i < 0) { if (this.paste.length > 20000) this.paste = this.paste.slice(0, 20000); return ev; }
+      if (i < 0) { if (this.paste.length > 20000) this.paste = this.paste.slice(0, 19900) + this.paste.slice(-10); return ev; } // over the cap: the middle is dropped, the end (maybe half the end marker) is kept
       const text = this.paste.slice(0, i), rest = this.paste.slice(i + 6); this.paste = null;
       ev.push({ k: "paste", text }); return ev.concat(this.feed(rest));
     }
@@ -166,7 +167,7 @@ function view(name, write) {
   let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, started = false;
   const sb = new Scrollback();
   const bar = (txt) => { const w = W(); let t = clipCells(` ${txt}`, w); t += " ".repeat(Math.max(0, w - cells(t))); return `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${t}\x1b[0m`; };
-  const prompt = () => { const pre = clipCells(lock ? `🔒 ${lock}${buf ? " · held: " : ""}` : "you> ", Math.floor(W() / 2)); return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
+  const prompt = () => { const pre = lock ? clipCells(`🔒 ${lock}`, Math.floor(W() / 2)) + (buf ? " · held: " : " ") : "you> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
   // One repaint writes everything: pinned header, the wrapped conversation viewport, a status line, the input line (cursor last).
   const paint = () => {
     if (!started) return;

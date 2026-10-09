@@ -184,3 +184,9 @@ test("review fixes: huge entry, paste is text, stray ESC, resize anchor, tabs, h
   assert.equal(wrapText("a\tb", 10).join(""), "a    b");
   assert.match(headerFit("Door-1", true, "busy answering the sandbox's request", 30), /🔒/); assert.match(headerFit("D", true, "", 80), /DEVELOPER MODE/);
 });
+test("review fixes 2: paste end marker split past the cap, resize keeps the place inside a long entry", () => {
+  const p = new KeyParser(); p.feed("\x1b[200~" + "x".repeat(20000) + "\x1b[20"); const e = p.feed("1~"); assert.equal(e[0]?.k, "paste"); assert.deepEqual(p.feed("a").map((x) => x.k), ["char"]);
+  const q = new KeyParser(); q.feed("\x1b[200~abc"); assert.deepEqual(q.feed("\x03").map((x) => x.k), ["quit"]);
+  const s = new Scrollback(); s.add(Array.from({ length: 300 }, (_, i) => `l${i}`).join("\n"), 60); s.scrollBy(100, 60, 13); const was = s.window(60, 13).at(-1);
+  s.setWidth(40); assert.equal(s.window(40, 13).at(-1), was); assert.ok(s.offset > 0);
+});
