@@ -12,5 +12,5 @@
   "engines": { "node": ">=20" },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
   "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test test/*.test.mjs" }
 }
