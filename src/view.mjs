@@ -60,7 +60,7 @@ function log(name) {
 }
 
 // ---- the window : a pinned header bar (white on the configured colour) that says which mode this is and whether typing
-// is possible right now, the live conversation in a scroll region, and an input line that is locked (🔒) with the reason
+// is possible right now, the conversation (scrollable: wheel, PgUp/PgDn, Shift+arrows, Home/End), a status line, and an input line that is locked (🔒) with the reason
 // whenever a line typed now would not be sent.
 export function worldHex() { const c = String(process.env.PI_DOORMAN_COLOR || "").replace(/^#/, ""); return /^[0-9A-Fa-f]{6}$/.test(c) ? c : "3b6ea5"; }
 const rgbOf = (h) => { const n = parseInt(h, 16); return `${n >> 16};${(n >> 8) & 255};${n & 255}`; };
@@ -81,19 +81,76 @@ export const clipCells = (s, max) => { let n = 0, o = ""; for (const x of SEG.se
 const tailCells = (s, max) => { const g = [...SEG.segment(s)].map((x) => x.segment); let n = 0, o = ""; for (let i = g.length - 1; i >= 0; i--) { const w = gw(g[i]); if (n + w > max) break; n += w; o = g[i] + o; } return o; };
 const unitIsActive = (name) => { try { execFileSync("systemctl", ["--user", "is-active", "--quiet", `${process.env.PI_DOORMAN_UNIT_PREFIX || "pi-doorman-"}${name}`]); return true; } catch { return false; } };
 
+// ---- scrollback (pure, tested): wrapping never cuts a line, the model keeps the conversation and a viewport offset.
+export function wrapText(text, width) {
+  const w = Math.max(1, width), rows = [];
+  for (const line of String(text).split("\n")) {
+    let cur = "", n = 0;
+    for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur) { rows.push(cur); cur = ""; n = 0; } cur += x.segment; n += g; }
+    rows.push(cur);
+  }
+  return rows;
+}
+export class Scrollback {
+  constructor(max = 3000) { this.entries = []; this.max = max; this.offset = 0; this.unseen = 0; this.w = 0; this.cache = []; }
+  rowsFor(i, width) { return (this.cache[i] ??= wrapText(this.entries[i], width)); }
+  all(width) { if (width !== this.w) { this.w = width; this.cache = []; } const r = []; for (let i = 0; i < this.entries.length; i++) r.push(...this.rowsFor(i, width)); return r; }
+  add(text, width) { // a new entry: the view stays where it is while scrolled up (and counts what's new)
+    const before = this.offset > 0 ? wrapText(text, width).length : 0;
+    this.entries.push(String(text)); if (this.entries.length > this.max) { this.entries.shift(); this.cache.shift(); }
+    if (this.offset > 0) { this.offset += before; this.unseen++; }
+  }
+  clamp(width, height) { const total = this.all(width).length; this.offset = Math.max(0, Math.min(this.offset, Math.max(0, total - height))); }
+  scrollBy(rows, width, height) { this.offset += rows; this.clamp(width, height); if (this.offset === 0) this.unseen = 0; }
+  top(width, height) { this.offset = Math.max(0, this.all(width).length - height); }
+  live() { this.offset = 0; this.unseen = 0; }
+  window(width, height) { this.clamp(width, height); const r = this.all(width), end = r.length - this.offset; return r.slice(Math.max(0, end - height), end); }
+}
+export const statusText = (offset, unseen) => (offset > 0 ? `↑ scrolled · End for live${unseen ? ` · ${unseen} new` : ""} · PgUp/PgDn, wheel, Home` : "wheel / PgUp / PgDn / Shift+arrows scroll · End = live");
+
+// Keys from the terminal, as a persistent parser (an escape sequence may arrive split across chunks). Returns events.
+export class KeyParser {
+  constructor() { this.st = 0; this.seq = ""; }
+  feed(chunk) {
+    const ev = [];
+    for (const c of chunk) {
+      if (this.st === 0) { if (c === "\x1b") { this.st = 1; this.seq = ""; } else if (c === "\x03" || c === "\x04") ev.push({ k: "quit" }); else if (c === "\r" || c === "\n") ev.push({ k: "enter" }); else if (c === "\x7f" || c === "\b") ev.push({ k: "backspace" }); else if (c >= " ") ev.push({ k: "char", c }); continue; }
+      if (this.st === 1) { if (c === "[") this.st = 2; else if (c === "O") this.st = 3; else this.st = 0; continue; }
+      if (this.st === 3) { this.st = 0; if (c === "H") ev.push({ k: "home" }); else if (c === "F") ev.push({ k: "end" }); continue; } // SS3: arrows etc. ignored
+      this.seq += c; // CSI: parameters until a final byte @-~
+      if (/[@-~]/.test(c)) {
+        const q = this.seq; this.st = 0; this.seq = "";
+        const mouse = q.match(/^<(\d+);\d+;\d+[Mm]$/);
+        if (mouse) { const b = Number(mouse[1]); if (q.endsWith("M") && (b & 64)) ev.push({ k: (b & 1) ? "wheeldown" : "wheelup" }); continue; }
+        if (q === "5~") ev.push({ k: "pgup" }); else if (q === "6~") ev.push({ k: "pgdn" });
+        else if (q === "1;2A") ev.push({ k: "sup" }); else if (q === "1;2B") ev.push({ k: "sdown" });
+        else if (q === "H" || q === "1~" || q === "7~") ev.push({ k: "home" }); else if (q === "F" || q === "4~" || q === "8~") ev.push({ k: "end" });
+      }
+    }
+    return ev;
+  }
+}
+
 function view(name, write) {
   const d = stateDir(name), f = path.join(d, "events.jsonl"), fifo = path.join(d, "input.fifo"), sf = path.join(d, "status.json");
   const label = process.env.PI_DOORMAN_LABEL || name, bg = rgbOf(worldHex());
-  const W = () => process.stdout.columns || 80, Hh = () => process.stdout.rows || 24;
+  const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3; // header, conversation, status line, input
   const P = (s) => process.stdout.write(s);
   const mode = write ? "DEVELOPER MODE" : "OBSERVER (read-only)";
-  let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, esc = 0;
+  let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, started = false;
+  const sb = new Scrollback();
   const bar = (txt) => { const w = W(); let t = clipCells(` ${txt}`, w); t += " ".repeat(Math.max(0, w - cells(t))); return `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${t}\x1b[0m`; };
-  const paintHeader = () => P(`\x1b7\x1b[1;1H${bar(headerText(label, write, lock))}\x1b8\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`);
   const prompt = () => { const pre = lock ? `🔒 (${lock}) ${buf ? "held: " : ""}` : "you> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
-  const paintInput = () => P(`\x1b[${Hh()};1H\x1b[2K${clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", W() - 1)}`);
-  const setup = () => { P(`\x1b[2J\x1b[2;${Hh() - 1}r`); paintHeader(); P(`\x1b[2;1H`); paintInput(); };
-  const out = (s) => { P(`\x1b7\x1b[${Hh() - 1};1H\r\n${plain(String(s)).replace(/\n/g, "\r\n")}\x1b8`); }; // everything shown passes plain(): no escape sequence from Doorman or sandbox text reaches the terminal
+  // One repaint writes everything: pinned header, the wrapped conversation viewport, a status line, the input line (cursor last).
+  const paint = () => {
+    if (!started) return;
+    const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerText(label, write, lock))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
+    for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${rows[i - (VH() - rows.length)] ?? ""}`; // short histories sit at the bottom
+    o += `\x1b[${Hh() - 1};1H\x1b[2K\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`;
+    o += `\x1b[${Hh()};1H\x1b[2K${clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", w - 1)}\x1b[?25h`;
+    P(o);
+  };
+  const out = (s) => { sb.add(plain(String(s)), W()); paint(); }; // everything shown passes plain(): no escape sequence from Doorman or sandbox text reaches the terminal
   const refresh = () => {
     unitOk = unitIsActive(name);
     let st = null; try { st = JSON.parse(fs.readFileSync(sf, "utf8")); } catch { /* */ }
@@ -103,48 +160,52 @@ function view(name, write) {
       if ((seenWorking && status.state === "idle") || Date.now() - sentAt > 90000) { sentAt = 0; seenWorking = false; }
     }
     let l = !write || !unitOk ? lockReason({ write, unitActive: unitOk }) : status.state !== "idle" && status.state !== "working" ? "status unknown" : sentAt ? "answering you; wait for it" : lockReason({ write, unitActive: unitOk, state: status.state, lastQuestion: status.question });
-    if (l !== lock) { const was = lock; lock = l; paintHeader(); paintInput(); if (was && !l) out("🔓 typing is on again"); }
+    if (l !== lock) { const was = lock; lock = l; if (was && !l) out("🔓 typing is on again"); else paint(); }
   };
-  setup();
-  out(write ? "Developer mode: what you type is marked as yours and reaches only the Doorman. It can't approve or run anything, and nothing you type goes to the sandbox." : "Observer mode: read-only. Nothing you do here reaches the Doorman.");
+  // History: the tail of the events log (about 400 KB, from a whole line) is loaded at start, then followed.
   let pos = 0;
-  try { pos = Math.max(0, fs.statSync(f).size - 20000); } catch { /* none yet */ }
-  let rbuf = "";
+  try { pos = Math.max(0, fs.statSync(f).size - 400000); } catch { /* none yet */ }
+  let rbuf = "", skipFirst = pos > 0;
   const pump = () => {
     let fd; try { fd = fs.openSync(f, "r"); } catch { return; }
     try {
-      const size = fs.fstatSync(fd).size; if (size < pos) pos = 0;
+      const size = fs.fstatSync(fd).size; if (size < pos) { pos = 0; skipFirst = false; }
       const b = Buffer.alloc(Math.min(size - pos, 1 << 20)); const n = fs.readSync(fd, b, 0, b.length, pos); pos += n; rbuf += b.toString("utf8", 0, n);
-      let i; while ((i = rbuf.indexOf("\n")) >= 0) { const line = rbuf.slice(0, i); rbuf = rbuf.slice(i + 1); try { const r = render(JSON.parse(line)); if (r) out(r); } catch { /* */ } }
+      let i; while ((i = rbuf.indexOf("\n")) >= 0) { const line = rbuf.slice(0, i); rbuf = rbuf.slice(i + 1); if (skipFirst) { skipFirst = false; continue; } try { const r = render(JSON.parse(line)); if (r) sb.add(plain(r), W()); } catch { /* */ } }
     } finally { fs.closeSync(fd); }
   };
-  refresh(); setInterval(() => { pump(); refresh(); }, 500); pump();
-  process.stdout.on("resize", () => { setup(); });
+  const mouse = (on) => P(`\x1b[?1000${on ? "h" : "l"}\x1b[?1006${on ? "h" : "l"}`);
+  const quit = () => { mouse(false); P("\x1b[?25h\x1b[2J\x1b[H"); process.exit(0); };
+  process.on("SIGTERM", quit); process.on("SIGHUP", quit);
+  P("\x1b[2J"); mouse(true);
+  pump();
+  sb.add(write ? "Developer mode: what you type is marked as yours and reaches only the Doorman. It can't approve or run anything, and nothing you type goes to the sandbox." : "Observer mode: read-only. Nothing you do here reaches the Doorman.", W());
+  started = true; refresh(); paint();
+  setInterval(() => { pump(); refresh(); paint(); }, 500);
+  process.stdout.on("resize", () => { P("\x1b[2J"); paint(); });
   const send = () => {
     const pl = promptLine(buf);
     if (!pl) { buf = ""; return; }
     refresh();
     if (lock) { out(`🔒 not sent (${lock}); your line is held, press Enter again when typing is on`); if (!buf.endsWith(" ")) buf += " "; return; }
-    try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); out(`🧑 you: ${clip(plain(buf), 300)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
+    try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); sb.live(); out(`🧑 you: ${clip(plain(buf), 300)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
     catch (e) { out(`🔒 not sent: the Doorman's input isn't open (${e.code || e.message}); line held`); }
   };
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8"); process.stdin.resume();
+  const keys = new KeyParser(), page = () => Math.max(1, VH() - 1);
   process.stdin.on("data", (chunk) => {
-    for (let i = 0; i < chunk.length; i++) {
-      const c = chunk[i];
-      if (c === "\x03" || c === "\x04") { P("\x1b[r\x1b[2J\x1b[H"); process.exit(0); }
-      if (!write) continue;
-      if (esc) { // inside an escape sequence (arrow keys etc.), possibly split across chunks: swallowed
-        if (esc === 1) { esc = c === "[" || c === "O" ? 2 : 0; continue; }
-        if (/[@-~]/.test(c)) esc = 0; continue;
-      }
-      if (c === "\x1b") { esc = 1; continue; }
-      if (c === "\r" || c === "\n") send();
-      else if (c === "\x7f" || c === "\b") buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join("");
-      else if (c >= " ") buf += c;
+    for (const e of keys.feed(chunk)) {
+      if (e.k === "quit") quit();
+      else if (e.k === "pgup") sb.scrollBy(page(), W(), VH()); else if (e.k === "pgdn") sb.scrollBy(-page(), W(), VH());
+      else if (e.k === "sup" || e.k === "wheelup") sb.scrollBy(e.k === "sup" ? 1 : 3, W(), VH()); else if (e.k === "sdown" || e.k === "wheeldown") sb.scrollBy(e.k === "sdown" ? -1 : -3, W(), VH());
+      else if (e.k === "home") sb.top(W(), VH()); else if (e.k === "end") sb.live();
+      else if (!write) continue; // observer: scrolling only, nothing typed goes anywhere
+      else if (e.k === "enter") send();
+      else if (e.k === "backspace") buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join("");
+      else if (e.k === "char") buf += e.c;
     }
-    paintInput();
+    paint();
   });
 }
 

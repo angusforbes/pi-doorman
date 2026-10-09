@@ -156,3 +156,20 @@ test("hidden fields are dropped per kind: what's shown is all that runs", async 
   const e = svc.list()[0]; assert.equal(e.msg.patch, ""); assert.equal(e.msg.target, ""); await svc.decide("h1111", true, e.code);
   assert.ok(!/UNREVIEWED|protected/.test(fs.readFileSync(out, "utf8")));
 });
+import { wrapText, Scrollback, KeyParser, statusText } from "../src/view.mjs";
+test("scrollback: wrapping never cuts, scrolling, no yank, counts new", () => {
+  assert.deepEqual(wrapText("abcdefghij", 4), ["abcd", "efgh", "ij"]); assert.equal(wrapText("a\nb", 10).length, 2); assert.equal(wrapText("🚪🚪🚪", 4).join(""), "🚪🚪🚪");
+  assert.equal(wrapText("x".repeat(95), 10).join(""), "x".repeat(95));
+  const s = new Scrollback(); for (let i = 0; i < 30; i++) s.add(`line ${i}`, 20);
+  assert.equal(s.window(20, 5).at(-1), "line 29"); s.scrollBy(10, 20, 5); assert.equal(s.window(20, 5).at(-1), "line 19");
+  s.add("fresh", 20); s.add("fresh2", 20); assert.equal(s.window(20, 5).at(-1), "line 19"); assert.equal(s.unseen, 2); assert.match(statusText(s.offset, s.unseen), /2 new/);
+  s.top(20, 5); assert.equal(s.window(20, 5)[0], "line 0"); s.scrollBy(1000, 20, 5); assert.equal(s.window(20, 5)[0], "line 0");
+  s.live(); assert.equal(s.window(20, 5).at(-1), "fresh2"); assert.equal(s.unseen, 0);
+  s.scrollBy(3, 20, 5); s.scrollBy(-99, 20, 5); assert.equal(s.offset, 0);
+});
+test("keys: wheel, PgUp/PgDn, Shift+arrows, Home/End, split sequences, typing", () => {
+  const k = new KeyParser(), kinds = (str) => k.feed(str).map((e) => e.k + (e.c ?? ""));
+  assert.deepEqual(kinds("\x1b[<64;10;5M"), ["wheelup"]); assert.deepEqual(kinds("\x1b[<65;10;5M"), ["wheeldown"]); assert.deepEqual(kinds("\x1b[<0;10;5M\x1b[<64;1;1m"), []);
+  assert.deepEqual(kinds("\x1b[5~\x1b[6~\x1b[1;2A\x1b[1;2B"), ["pgup", "pgdn", "sup", "sdown"]); assert.deepEqual(kinds("\x1b[H\x1b[F\x1b[1~\x1b[4~"), ["home", "end", "home", "end"]);
+  assert.deepEqual(kinds("\x1b"), []); assert.deepEqual(kinds("[A"), []); assert.deepEqual(kinds("hi\r\x7f\x1bOAx"), ["charh", "chari", "enter", "backspace", "charx"]);
+});
