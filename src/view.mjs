@@ -75,7 +75,7 @@ export function headerText(label, write) {
   return `🚪 ${label} · ${write ? "ARCHIVE + DECISIONS ONLY" : "ARCHIVE (read-only)"} · nothing typed here reaches the Doorman`;
 }
 const SEG = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const gw = (g) => (/^[\u0001-\u0006]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
+const gw = (g) => (/^[\u0001-\u0007]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
 export const cells = (s) => [...SEG.segment(s)].reduce((n, x) => n + gw(x.segment), 0);
 export const clipCells = (s, max) => { let n = 0, o = ""; for (const x of SEG.segment(s)) { const w = gw(x.segment); if (n + w > max) break; n += w; o += x.segment; } return o; };
 const tailCells = (s, max) => { const g = [...SEG.segment(s)].map((x) => x.segment); let n = 0, o = ""; for (let i = g.length - 1; i >= 0; i--) { const w = gw(g[i]); if (n + w > max) break; n += w; o = g[i] + o; } return o; };
@@ -85,7 +85,7 @@ export function wrapText(text, width) {
   const w = Math.max(1, width), rows = [];
   for (const line of String(text).replace(/\t/g, "    ").split("\n")) {
     // a row drawn from the integration (\u0001 body / \u0002 banner) stays marked on every wrapped row, so its colour never breaks off
-    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0006]/.test(line) ? line[0] + (line[0] === "\u0006" ? "   " : "") : "", mw = cells(mk) < w ? cells(mk) : 0;
+    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0007]/.test(line) ? line[0] : "", mw = cells(mk) < w ? cells(mk) : 0;
     let cur = "", n = 0;
     for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur && n > mw) { rows.push(cur); cur = mw ? mk : mk[0] || ""; n = mw; } cur += x.segment; n += g; }
     rows.push(cur);
@@ -244,11 +244,12 @@ const MDX = (s) => s.replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/__([^_\n]+)__/
 export function meaningful(t) {
   return String(t ?? "").replace(/\[your host card[\s\S]*?\[end of host card\]\s*/g, "").split("\n")
     .map((l) => MDX(l.replace(/^[\s│|>]*(?:🐳[│ ]*)*/u, "").trim()))
-    .filter((l) => l && !/^\[[^\]]*\]$/.test(l) && !/^\[[^\]]*\]\s*\(.*\)?$/.test(l) && !/^\(.*\)$/.test(l) && !/^Reply \(optional\)/.test(l));
+    .filter((l) => l && !/^\[[^\]]*\]$/.test(l) && !/^\[[^\]]*\]\s*\(.*\)?$/.test(l) && !/^\(.*\)$/.test(l) && !/^Reply \(optional\)/.test(l) && !/is waiting for your answer\. Reply once with/.test(l) && !/^Reply once with \w+\(/.test(l));
 }
 // folded: at most `max` characters of the text (whole lines first), the rest behind Tab
 const block = (mk, lines, max) => { const out = []; let n = 0; for (const l of lines) { if (n >= max) break; const room = max - n; out.push(l.length > room ? clip(l, room) : l); n += l.length; } if (n > max || out.length < lines.length) out[out.length - 1] = out[out.length - 1].replace(/…?$/, "…"); return out.map((l) => mk + l).join("\n"); };
-// One RPC event -> its folded display (or null).
+// One RPC event -> its folded display (or null), drawn like an agent's chat thread: a blank line, a header ("who · time"), the text under it.
+const at = (m) => (Number(m?.timestamp) ? ` \u0005${hhmm(Number(m.timestamp))}` : "");
 export function foldedRender(ev) {
   if (!ev || ev.type !== "message_end" || !ev.message) return null;
   const m = ev.message;
@@ -256,11 +257,10 @@ export function foldedRender(ev) {
   if (m.role !== "assistant") {
     const raw = plain(textOf(m)), ls = meaningful(raw);
     if (!ls.length) return null;
-    const note = m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw); // a short "[host] request …: done" note injected by the integration (never a typed user line)
-    // a host receipt ("[host] request …: failed"): labelled as the host's, never drawn like the Doorman's own words (Doorview)
-    if (note) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return `\u0005⚙ from ${src} (the host, not the Doorman)\n` + block("\u0005", ls.map((l, k) => (k ? l : `📍 ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 200); }
+    // a short "[host] request …: done" note injected by the integration (never a typed user line): the host's, dim, never like the Doorman's words
+    if (m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw)) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return "\n" + block("\u0005", ls.map((l, k) => (k ? l : `⚙ ${src} (the host, not the Doorman): ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 220); }
     const who = /^\[([^\]\n]{1,60})\]\s*/.exec(ls[0]), body = who ? [ls[0].slice(who[0].length), ...ls.slice(1)].filter(Boolean) : ls;
-    return `\u0005${who ? `from ${who[1]}` : "request"}\n` + block("\u0003", body, 280);
+    return `\n\u0007${who ? who[1] : "to the Doorman"}${at(m)}\n` + block("\u0004", body, 280);
   }
   const calls = (m.content || []).filter((c) => c?.type === "toolCall"), out = [];
   for (const c of calls) {
@@ -268,10 +268,10 @@ export function foldedRender(ev) {
     const txt = typeof a.text === "string" ? a.text : typeof a.message === "string" ? a.message : "";
     if (!txt) continue; // reading files, looking things up: not shown
     const to = a.to ?? a.for ?? "";
-    out.push(`\u0005Doorman → ${clip(plain(String(Array.isArray(to) ? to.join(", ") : to)) || plain(String(c.name)).replace(/^[a-z0-9]+_/, ""), 60)}`, block("\u0004", meaningful(plain(txt)), 240));
+    out.push(`\n\u0007🚪 Doorman → ${clip(plain(String(Array.isArray(to) ? to.join(", ") : to)) || plain(String(c.name)).replace(/^[a-z0-9]+_/, ""), 60)}${at(m)}`, block("\u0004", meaningful(plain(txt)), 240));
   }
   const t = plain(textOf(m)).trim();
-  if (t && !out.length) out.push(block("\u0005", ["Doorman: " + meaningful(t).join(" ")], 150)); // its own words only when it sent nothing (else they repeat the reply)
+  if (t && !out.length) out.push("\n" + block("\u0005", ["🚪 Doorman: " + meaningful(t).join(" ")], 150)); // its own words only when it sent nothing (else they repeat the reply)
   if (m.stopReason === "error") out.push(`\u0005⚠ ${clip(plain(m.errorMessage), 300)}`);
   return out.length ? out.join("\n") : null;
 }
@@ -283,7 +283,7 @@ export function decisionLine(d) {
   const sym = d.ok === false ? "✗" : d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : d.verb === "SENT BACK WITH YOUR NOTE" ? "↩" : "✓";
   const first = d.sum?.body?.[0] ? ` "${clip(d.sum.body[0], 90)}"` : "";
   const now = d.ok === false ? d.result : d.track || "the host is acting on it…";
-  return `\u0006${sym} ${hhmm(d.at)}  ${d.ok === false ? "Not decided" : VERB_WORDS[d.verb] || d.verb}  ·  ${plain(d.title || "")}${first}${d.note ? `  ·  your note: ${plain(d.note)}` : ""}\n\u0005   ${d.done ? "📍" : "⏳"} ${plain(now)}`;
+  return `\n\u0006${sym} ${d.ok === false ? "Not decided" : VERB_WORDS[d.verb] || d.verb}: ${clip(plain(d.title || ""), 90)} \u0005${hhmm(d.at)}\n\u0001${first ? `${first.trim()}  ` : ""}${d.note ? `(your note: ${plain(d.note)})` : ""}\n\u0001${d.done ? "📍" : "⏳"} ${plain(now)}`.replace(/\n\u0001\n/, "\n");
 }
 // The decision panel at the bottom while something waits: title, who and when, the request (its first rows unless opened with Space), choices.
 export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
@@ -326,55 +326,68 @@ async function view(name, write) {
   let review = null, rv = null, gone = null, decidedId = "", decided = null;
   if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
   const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
-  const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(8, process.stdout.rows || 24), TOP = () => (info ? 3 : 2);
-  const panel = () => (rv && write !== undefined ? panelRows(rv, W(), { maxBody: expanded ? Math.max(3, Hh() - TOP() - 8) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
+  // Laid out like an agent panel: a rule with the name at the top, the thread, (what waits for you), a status line, a rule, the input line, a footer bar.
+  const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(9, process.stdout.rows || 24), TOP = () => 2, BOTTOM = 4;
+  const accent = rgbOf(worldHex()), PROMPT = plain(process.env.PI_DOORMAN_PROMPT || "").slice(0, 8);
+  const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: expanded ? Math.max(3, Hh() - 10) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
   // the body gets exactly the rows that fit, so paging (whose end is total minus the shown rows) can always reach the last line (LayoutReview)
   const panelFit = () => {
-    let p = panel(); if (!p.length) return p; const room = Math.max(2, Hh() - TOP() - 3);
-    if (p.length > room) { const fixed = p.filter((x) => x.s === "title" || x.s === "choices").length; p = panelRows(rv, W(), { maxBody: Math.max(1, room - fixed), offset: panelOff }); }
+    let p = panel(); if (!p.length) return p; const room = Math.max(2, Hh() - 8);
+    if (p.length > room) { const fixed = p.filter((x) => x.s === "title" || x.s === "choices").length; p = panelRows(rv, W() - 4, { maxBody: Math.max(1, room - fixed), offset: panelOff }); }
     return fitPanel(p, room);
   };
   // read coverage is marked only for rows actually drawn (in paint), never for pages computed in between (LayoutReview)
   const markRead = (f) => { if (!rv || !f.seen) return; const sn = f.seen, w = W(); if (rv.readW !== w) { rv.readW = w; rv.readTo = 0; rv.readAll = false; } if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; };
-  const VH = (pn = panelFit().length) => Math.max(1, Hh() - TOP() + 1 - pn - 2 - (pn ? 1 : 0));
+  const VH = (pn = panelFit().length) => Math.max(1, Hh() - 1 - BOTTOM - (pn ? pn + 1 : 0));
   const P = (x) => process.stdout.write(x);
   let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
   const hostRow = (t) => `\u0002 ${plain(t)}`;
   const say = (t) => { notice = { t: plain(t), at: Date.now() }; sbF.add(hostRow(t), W()); };
   const pad = (r, w) => r + " ".repeat(Math.max(0, w - cells(r)));
-  const styled = (r, w) => {
+  const B = (x) => `\x1b[1m${x}\x1b[22m`, D = (x) => `\x1b[2m${x}\x1b[22m`, FG = (rgb, x) => `\x1b[38;2;${rgb}m${x}\x1b[39m`;
+  const chip = (rgb, x) => `\x1b[48;2;${rgb}m\x1b[38;2;255;255;255m\x1b[1m ${x} \x1b[0m`; // white on a colour, like a decision turn in an agent panel
+  const split5 = (x) => { const k = x.indexOf("\u0005"); return k < 0 ? [x, ""] : [x.slice(0, k), x.slice(k + 1)]; };
+  // one thread row -> terminal text (markers are ours; plain() keeps them out of every outside string)
+  const styled = (r) => {
     const c = r[0], x = r.slice(1);
-    if (c === "\u0003") return `\x1b[48;2;226;236;250m\x1b[38;2;25;35;55m${pad(" " + x, w)}\x1b[0m`;   // a request: soft light blue, like a prompt
-    if (c === "\u0004") return ` ${x}`;                                                                 // a result: plain text
-    if (c === "\u0005") return `\x1b[2m ${x}\x1b[0m`;                                                  // a label / where it went: dim
-    if (c === "\u0006") return `\x1b[1m ${x.replace(/^([✓✗↩•])/, (m) => (m === "✓" ? "\x1b[38;2;30;130;60m✓\x1b[39m" : m === "✗" ? "\x1b[38;2;150;150;150m✗\x1b[39m" : m))}\x1b[0m`;
-    if (c === "\u0002") return `\x1b[2m${x}\x1b[0m`;
-    if (c === "\u0001") return `\x1b[48;2;242;242;242m${pad(x, w)}\x1b[0m`;
+    if (c === "\u0007") { const [a, b] = split5(x); return `  ${B(a.replace(/^(🚪 Doorman)/, (m) => FG(accent, m)))}${b ? D("  " + b) : ""}`; } // an entry's header: who · time
+    if (c === "\u0004" || c === "\u0003") return `   ${x}`;                                                                    // its text
+    if (c === "\u0005" || c === "\u0002") return D(`   ${x.trim()}`);                                                         // a quiet line: the host's notes, where things went
+    if (c === "\u0006") { const [a, b] = split5(x); return `  ${chip(/^✗|^•/.test(a) ? "120;120;120" : accent, a)}${b ? D("  " + b) : ""}`; } // a decision
+    if (c === "\u0001") return `   ${FG(accent, "│")} ${x.replace(/^┃ ?/, "")}`;                                               // under a decision
     return r;
   };
   const paintPanelRow = (p, w) => {
-    const t = clipCells(p.t, w);
-    if (p.s === "title") return `\x1b[48;2;${red}m\x1b[38;2;255;255;255m\x1b[1m${pad(t, w)}\x1b[0m`;            // the one red thing on screen
-    if (p.s === "body") return `\x1b[38;2;${red}m▌\x1b[0m\x1b[48;2;246;246;246m\x1b[38;2;20;20;20m${pad(clipCells(t, w - 1), w - 1)}\x1b[0m`;
-    if (p.s === "choices") return `\x1b[1m${pad(t, w)}\x1b[0m`;
-    return `\x1b[2m${pad(t, w)}\x1b[0m`;
+    const t = p.t.replace(/^ /, "");
+    if (p.s === "title") return `  ${chip(red, clipCells(t, w - 6))}`;                                                   // the one red thing on screen
+    if (p.s === "body") return `   ${FG(red, "│")} ${clipCells(t, w - 6)}`;
+    if (p.s === "choices") return `   ${B(clipCells(t, w - 4))}`;
+    return D(`   ${clipCells(t, w - 4)}`);
   };
+  const rule = (label, w) => FG(accent, "─" + (label ? ` ${label} ` : "") + "─".repeat(Math.max(0, w - 1 - (label ? cells(label) + 2 : 0))));
   const paint = () => {
     if (!started || editing) return;
-    const w = W(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 1, vh); markRead(pn);
-    let o = `\x1b[?25l\x1b[1;1H\x1b[2K\x1b[1m 🚪 ${clipCells(label, 40)}\x1b[0m\x1b[2m · requests, results and your decisions · ${full ? "full log (Tab: folded)" : "Tab: full log"} · ${write ? "type only your decision" : "read-only"}\x1b[0m\x1b]2;🚪 ${label}\x07`;
-    if (info) o += `\x1b[2;1H\x1b[2K\x1b[2m${clipCells(" " + info, w)}\x1b[0m`;
-    for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "", w)}`;
+    const w = W(), H = Hh(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 5, vh); markRead(pn);
+    const off = sbv().offset, head = `🚪 ${clipCells(label, 30)}${full ? " · full log" : ""}${off ? ` · ↓ ${off} below` : ""}`;
+    let o = `\x1b[?25l\x1b]2;🚪 ${label}\x07\x1b[1;1H\x1b[2K${rule(head, w)}`;
+    for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "")}`; // a short thread sits just above the bottom, like a chat
     let y = TOP() + vh;
     if (pn.length) { o += `\x1b[${y++};1H\x1b[2K`; for (const p of pn) o += `\x1b[${y++};1H\x1b[2K${paintPanelRow(p, w)}`; }
-    const st = notice && Date.now() - notice.at < 8000 ? `\x1b[1m ${clipCells(notice.t, w - 2)}\x1b[0m` : `\x1b[2m ${clipCells(sbv().offset > 0 ? statusText(sbv().offset, sbv().unseen) : rv ? (write ? "read the request, then type your choice and Enter" : "read-only: decide elsewhere") : "nothing waiting for you", w - 2)}\x1b[0m`;
-    o += `\x1b[${Hh() - 1};1H\x1b[2K${st}`;
-    const pre = rv ? "decide> " : "> ", inputRow = write ? pre + tailCells(plain(buf), Math.max(4, w - 2 - cells(pre))) : "";
-    o += `\x1b[${Hh()};1H\x1b[2K${rv && write ? `\x1b[1m\x1b[38;2;${red}m${pre}\x1b[0m${inputRow.slice(pre.length)}` : `\x1b[2m${inputRow}\x1b[0m`}\x1b[?25h`;
+    const fresh = notice && Date.now() - notice.at < 8000;
+    const st = fresh ? (/^✗/.test(notice.t) ? `\x1b[31m ${clipCells(notice.t, w - 2)}\x1b[39m` : B(" " + clipCells(notice.t, w - 2)))
+      : D(" " + clipCells(rv ? (write ? "read the request, then type your choice and ⏎" : "read-only: decide elsewhere") : info || "nothing is waiting for you", w - 2));
+    o += `\x1b[${H - 3};1H\x1b[2K${st}\x1b[${H - 2};1H\x1b[2K${FG(accent, "─".repeat(w))}`;
+    // the input line: live (red ❯) only while something waits for a decision; greyed out otherwise
+    const live = !!(rv && write), pre = `${PROMPT ? PROMPT + " " : ""}❯ `, typed = tailCells(plain(buf), Math.max(4, w - 2 - cells(pre)));
+    const hint = !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
+    o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hint) : D(pre + typed + hint)}`;
+    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · Space read all · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
+    o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
+    o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
     P(o);
   };
   const refresh = () => { try { const t = plain(String(review?.info?.() ?? "")).replace(/\s+/g, " ").trim().slice(0, 400); if (t !== info) { info = t; P("\x1b[2J"); } } catch { /* */ } pollReview(); pollTrack(); };
-  const waitLine = (item) => `\u0005⏸ ${hhmm(Date.now())}  waiting for you: ${plain(itemTitle(item))}`;
+  const waitLine = (item) => `\n\u0005⏸ waiting for you: ${plain(itemTitle(item))} · ${hhmm(Date.now())}`;
   const pollReview = () => {
     if (!review) return;
     const cur = readCur();
@@ -382,13 +395,13 @@ async function view(name, write) {
     if (cur && (!rv || rv.id !== cur.id)) {
       if (buf) { buf = ""; say("what you had typed was cleared: a new request arrived; read it, then type your choice"); }
       rv = { ...cur, shownAt: Date.now() }; expanded = false; panelOff = 0;
-      rv.line = sbC.add(waitLine(rv), W() - 1); sbC.live(); sbF.add(reviewBlock(rv, W() - 1), W() - 1, 400000); sbF.live(); P("\x1b[2J"); paint();
+      rv.line = sbC.add(waitLine(rv), W() - 5); sbC.live(); sbF.add(reviewBlock(rv, W() - 5), W() - 5, 400000); sbF.live(); P("\x1b[2J"); paint();
     } else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; buf = ""; if (rv.id !== decidedId) lost(rv); rv = null; expanded = false; P("\x1b[2J"); paint(); }
   };
-  const record = (dd) => { if (dd.line >= 0) sbC.set(dd.line, decisionLine(dd), W() - 1); else dd.line = sbC.add(decisionLine(dd), W() - 1); };
+  const record = (dd) => { if (dd.line >= 0) sbC.set(dd.line, decisionLine(dd), W() - 5); else dd.line = sbC.add(decisionLine(dd), W() - 5); };
   function lost(item) {
     decided = { id: item.id, verb: "DECIDED ELSEWHERE", via: "", at: Date.now(), sum: requestSummary(item.text), title: itemTitle(item), track: "", done: false, line: item.line ?? -1 };
-    record(decided); sbF.add(hostRow(`request ${item.id} is no longer waiting (decided elsewhere or expired)`), W() - 1); sbF.add(decisionBlock(decided, W() - 1), W() - 1, 400000); trackAt = 0;
+    record(decided); sbF.add(hostRow(`request ${item.id} is no longer waiting (decided elsewhere or expired)`), W() - 5); sbF.add(decisionBlock(decided, W() - 5), W() - 5, 400000); trackAt = 0;
   }
   let trackAt = 0;
   const pollTrack = () => {
@@ -401,7 +414,7 @@ async function view(name, write) {
     else if (t.state === "gone" && decided.verb === "DECIDED ELSEWHERE") decided.verb = "NO LONGER WAITING";
     const text = plain(t.text).replace(/\s+/g, " ").trim().slice(0, 400);
     if (decided.verb === "DECIDED ELSEWHERE" && ["approved", "denied", "returned"].includes(t.state)) decided.verb = t.state === "approved" ? "APPROVED" : t.state === "returned" ? VERBS.r : "DENIED";
-    if (text && text !== decided.track) { decided.track = text; sbF.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W() - 1); }
+    if (text && text !== decided.track) { decided.track = text; sbF.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W() - 5); }
     if (t.done) decided.done = true;
     record(decided); paint();
   };
@@ -413,7 +426,7 @@ async function view(name, write) {
     try {
       const size = fs.fstatSync(fd).size; if (size < pos) { pos = 0; skipFirst = false; }
       const b = Buffer.alloc(Math.min(size - pos, 1 << 20)); const n = fs.readSync(fd, b, 0, b.length, pos); pos += n; rbuf += b.toString("utf8", 0, n);
-      let i; while ((i = rbuf.indexOf("\n")) >= 0) { const line = rbuf.slice(0, i); rbuf = rbuf.slice(i + 1); if (skipFirst) { skipFirst = false; continue; } try { const ev = JSON.parse(line), r = render(ev), c = foldedRender(ev); if (r) sbF.add(plain(r), W() - 1); if (c) sbC.add("\n" + c, W() - 1); } catch { /* */ } }
+      let i; while ((i = rbuf.indexOf("\n")) >= 0) { const line = rbuf.slice(0, i); rbuf = rbuf.slice(i + 1); if (skipFirst) { skipFirst = false; continue; } try { const ev = JSON.parse(line), r = render(ev), c = foldedRender(ev); if (r) sbF.add(plain(r), W() - 5); if (c) sbC.add(c, W() - 5); } catch { /* */ } }
     } finally { fs.closeSync(fd); }
   };
   const mouse = (on) => P(`\x1b[?1000${on ? "h" : "l"}\x1b[?1006${on ? "h" : "l"}\x1b[?2004${on ? "h" : "l"}`);
@@ -422,7 +435,7 @@ async function view(name, write) {
   process.on("exit", () => { try { mouse(false); } catch { /* */ } }); process.on("uncaughtException", (e) => { try { mouse(false); P("\x1b[?25h"); } catch { /* */ } console.error(e); process.exit(1); });
   P("\x1b[2J"); mouse(true);
   pump();
-  sbF.add(write ? "Full log of the Doorman's conversation (Tab: back to the folded view). The only thing you can type in this window is a decision for a held request; nothing typed here reaches the Doorman." : "Archive, read-only. Nothing you do here reaches the Doorman.", W() - 1);
+  sbF.add(write ? "Full log of the Doorman's conversation (Tab: back to the folded view). The only thing you can type in this window is a decision for a held request; nothing typed here reaches the Doorman." : "Archive, read-only. Nothing you do here reaches the Doorman.", W() - 5);
   started = true; refresh(); paint();
   setInterval(() => { pump(); refresh(); paint(); }, 500);
   process.stdout.on("resize", () => { P("\x1b[2J"); paint(); });
@@ -442,7 +455,7 @@ async function view(name, write) {
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
     const settle = (ok, text) => {
       if (!ok) { dd.ok = false; dd.result = `the host refused: ${text}`; say(`✗ not decided: ${text}`); }
-      record(dd); sbF.add(decisionBlock(dd, W() - 1), W() - 1, 400000); if (text || !ok) sbF.add(hostRow(`${ok ? "✓" : "✗"} ${text || "no answer"}`), W() - 1); if (ok) notice = null;
+      record(dd); sbF.add(decisionBlock(dd, W() - 5), W() - 5, 400000); if (text || !ok) sbF.add(hostRow(`${ok ? "✓" : "✗"} ${text || "no answer"}`), W() - 5); if (ok) notice = null;
       sbC.live(); sbF.live(); paint();
     };
     Promise.resolve().then(() => review.decide(id, c.choice, edited, note || undefined)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
@@ -463,19 +476,19 @@ async function view(name, write) {
     text = plain(text.replace(/\t/g, " ")).replace(/\n{3,}/g, "\n\n").slice(0, 20000);
     if (!text.trim() || text === original) { say(text === original ? "no change: nothing edited" : "empty: edit cancelled"); return paint(); }
     rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); panelOff = 0; rv.readTo = 0; rv.readAll = false; // the 2 s rule starts again
-    sbF.add(editedBlock(id, rv.edit.original, text, W() - 1), W() - 1, 400000); say("your edit is shown in the panel; type 1 to approve it"); P("\x1b[2J"); paint();
+    sbF.add(editedBlock(id, rv.edit.original, text, W() - 5), W() - 5, 400000); say("your edit is shown in the panel; type 1 to approve it"); P("\x1b[2J"); paint();
   };
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8"); process.stdin.resume();
   const keys = new KeyParser(), page = () => Math.max(1, VH() - 1);
   const panelPage = () => Math.max(1, (panelFit().seen?.to ?? 1) - (panelFit().seen?.from ?? 0) - 1);
-  const scroll = (n, pg) => { if (rv && expanded) panelOff = Math.max(0, panelOff - (pg ? Math.sign(n) * panelPage() : n)); else sbv().scrollBy(n, W() - 1, VH()); };
+  const scroll = (n, pg) => { if (rv && expanded) panelOff = Math.max(0, panelOff - (pg ? Math.sign(n) * panelPage() : n)); else sbv().scrollBy(n, W() - 5, VH()); };
   process.stdin.on("data", (chunk) => {
     for (const e of keys.feed(chunk)) {
       if (e.k === "quit") quit();
       else if (e.k === "pgup") scroll(page(), true); else if (e.k === "pgdn") scroll(-page(), true);
       else if (e.k === "sup" || e.k === "wheelup") scroll(e.k === "sup" ? 1 : 3); else if (e.k === "sdown" || e.k === "wheeldown") scroll(e.k === "sdown" ? -1 : -3);
-      else if (e.k === "home") sbv().top(W() - 1, VH()); else if (e.k === "end") { sbv().live(); panelOff = 0; }
+      else if (e.k === "home") sbv().top(W() - 5, VH()); else if (e.k === "end") { sbv().live(); panelOff = 0; }
       else if (e.k === "char" && e.c === "\t") { full = !full; P("\x1b[2J"); }
       else if (e.k === "char" && e.c === " " && !buf && rv) { expanded = !expanded; panelOff = 0; P("\x1b[2J"); }
       else if (!write) continue;

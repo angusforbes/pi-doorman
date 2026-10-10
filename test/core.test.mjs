@@ -326,7 +326,7 @@ test("review hook: a <answer> answers a question; refused elsewhere, empty, too 
 import { foldedRender } from "../src/view.mjs";
 test("folded view: a host receipt is labelled as the host's, not the Doorman's; tool results are hidden", () => {
   const r = foldedRender({ type: "message_end", message: { role: "custom", content: "[host] request x--123456 (open): failed. not opened" } });
-  assert.match(r, /from host \(the host, not the Doorman\)/); assert.ok(!/^\u0004/m.test(r), "not drawn as a result line");
+  assert.match(r, /host \(the host, not the Doorman\)/); assert.ok(!/^\u0004/m.test(r), "not drawn as a result line");
   assert.equal(foldedRender({ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "{}" }] } }), null);
   const q = foldedRender({ type: "message_end", message: { role: "user", content: "[Alpha, in box] hi \u0003evil" } });
   assert.ok(!q.slice(1).includes("\u0003evil"), "outside text can't carry a style marker");
@@ -345,6 +345,6 @@ test("decision panel: read tracking, fits small windows without losing the choic
   assert.equal(foldedRender({ type: "message_end", message: { role: "user", content: "[relay] request x approved" } }).includes("the host"), false, "a user line can't pose as the host");
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
   assert.ok(/\(c\.choice === "1" \|\| c\.choice === "3"\) && rv && !rv\.readAll/.test(src), "approving needs the whole request read");
-  assert.ok(/window\(w - 1, vh\); markRead\(pn\)/.test(src) && !/panelFit = \(\) => \{[^\n]*readTo/.test(src), "coverage is marked only when drawn");
+  assert.ok(/window\(w - 5, vh\); markRead\(pn\)/.test(src) && !/panelFit = \(\) => \{[^\n]*readTo/.test(src), "coverage is marked only when drawn");
   assert.ok(/rv\.readW !== w\) \{ rv\.readW = w; rv\.readTo = 0/.test(src), "a new width (rewrap) resets the coverage");
 });
