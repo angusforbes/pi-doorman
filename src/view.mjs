@@ -240,6 +240,7 @@ async function view(name, write) {
   const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3 - pinned().length - (info ? 1 : 0), TOP = () => (info ? 3 : 2); // header, conversation, pinned decision, status line, input
   const P = (s) => process.stdout.write(s);
   const mode = write ? "ARCHIVE + DECISIONS" : "ARCHIVE (read-only)";
+  let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
   let buf = "", started = false, editing = false, info = ""; // info: one dim line under the header from the integration (what is in effect: models, mode, level)
   const sb = new Scrollback();
   let review = null, rv = null, gone = null, decidedId = "";   // the review hook (optional)
@@ -324,7 +325,9 @@ async function view(name, write) {
   const send = () => {
     if (!review) { sb.add(hostRow("nothing to decide; this window only takes decisions"), W()); buf = ""; return paint(); }
     pollReview();
-    const cur = readCur(), c = classifyLine(buf, { rv, cur, gone });
+    // (AnswerReview) a paste is cleaned as it arrives, so an answer that came with control or formatting characters is refused here too
+    const cur = readCur(), c0 = classifyLine(buf, { rv, cur, gone }), dirty = pasteDirty; pasteDirty = false;
+    const c = c0.kind === "decide" && c0.choice === "a" && dirty ? { kind: "refuse", note: "your answer had control or invisible formatting characters (pasted); type it again as plain text. Nothing was sent" } : c0;
     if (c.kind === "ignore") { sb.add(hostRow("nothing to decide; this window only takes decisions" + (rv ? ` (type ${rv.choices.join(" / ")} for the request above)` : "")), W()); buf = ""; return paint(); }
     if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
@@ -372,8 +375,9 @@ async function view(name, write) {
       else if (e.k === "enter") send();
       else if (e.k === "backspace") buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join("");
       else if (e.k === "char") buf += e.c;
-      else if (e.k === "paste") buf += plain(e.text).replace(/\s+/g, " ");
+      else if (e.k === "paste") { if (CTRL.test(String(e.text).replace(/[\t\n\r]/g, " "))) pasteDirty = true; buf += plain(e.text).replace(/\s+/g, " "); }
     }
+    if (!buf) pasteDirty = false; // an emptied box forgets what was pasted into it
     paint();
   });
 }
