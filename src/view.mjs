@@ -341,7 +341,7 @@ async function view(name, write) {
   const markRead = (f) => { if (!rv || !f.seen) return; const sn = f.seen, w = W(); if (rv.readW !== w) { rv.readW = w; rv.readTo = 0; rv.readAll = false; } if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; };
   const VH = (pn = panelFit().length) => Math.max(0, Hh() - 1 - BOTTOM_() - (pn ? pn + (compact() ? 0 : 1) : 0));
   const P = (x) => process.stdout.write(x);
-  let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
+  let pasteDirty = false, inflight = ""; // inflight: the item whose decision is being made right now // (J385) the box holds pasted text that had control or formatting characters
   const hostRow = (t) => `\u0002 ${plain(t)}`;
   const say = (t) => { notice = { t: plain(t), at: Date.now() }; sbF.add(hostRow(t), W()); };
   const pad = (r, w) => r + " ".repeat(Math.max(0, w - cells(r)));
@@ -385,7 +385,8 @@ async function view(name, write) {
     // the input line: live (red ❯) only while something waits for a decision; greyed out otherwise
     const live = !!(rv && write), pre = `${PROMPT ? PROMPT + " " : ""}❯ `, typed = tailCells(plain(buf), Math.max(4, w - 2 - cells(pre)));
     const hint = compact() && fresh && !buf ? `  ${notice.t}` : !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
-    o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hint) : D(pre + typed + hint)}`;
+    const hintC = clipCells(hint, Math.max(0, w - 1 - cells(pre) - cells(typed))); // never wider than the line (a long notice can't scroll the screen)
+    o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hintC) : D(clipCells(pre + typed + hint, w - 1))}`;
     const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · Space read all · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
     o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
     o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
@@ -453,18 +454,19 @@ async function view(name, write) {
     if (c.kind === "ignore") { say(rv ? `only a decision can be typed here: ${rv.choices.join(" / ")}` : "nothing is waiting for a decision"); buf = ""; return paint(); }
     if (c.kind === "refuse") { say(c.note); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
-    if (c.id === decidedId && c.choice !== "e") { say("you already decided this request; the host is acting on it"); buf = ""; return paint(); } // one decision per item, even two in one keystroke chunk
+    if (inflight === c.id) { say("your decision on this request is still being made on the host"); buf = ""; return paint(); } // one decision at a time per item, even two in one keystroke chunk (the integration enforces decide-once)
     if (Hh() < MIN_H) { say("make the window taller to decide"); buf = ""; return paint(); }
     // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
     if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space, then PgDn to its end; nothing was decided"); buf = ""; return paint(); }
     const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
     const dd = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
-    const settle = (ok, text) => {
+    const settle = (ok, text) => { inflight = "";
       if (!ok) { dd.ok = false; dd.result = `the host refused: ${text}`; say(`✗ not decided: ${text}`); }
       record(dd); sbF.add(decisionBlock(dd, W() - 5), W() - 5, 400000); if (text || !ok) sbF.add(hostRow(`${ok ? "✓" : "✗"} ${text || "no answer"}`), W() - 5); if (ok) notice = null;
       sbC.live(); sbF.live(); paint();
     };
+    inflight = id;
     Promise.resolve().then(() => review.decide(id, c.choice, edited, note || undefined)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
   };
   const HINT_MARK = "# ----- pi-doorman: everything below this line is ignored -----";

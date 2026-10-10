@@ -357,6 +357,6 @@ test("a message can't pose as the Doorman's own reply in the folded view", () =>
 
 test("compact windows and decide-once guards exist", () => {
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
-  assert.ok(/c\.id === decidedId && c\.choice !== "e"/.test(src), "an item is decided once per window");
+  assert.ok(/inflight === c\.id/.test(src) && /settle = \(ok, text\) => \{ inflight = ""/.test(src), "one decision in flight per item");
   assert.ok(/H < MIN_H\) \{ P\(/.test(src) && /compact\(\) \? 3 : 4/.test(src), "small windows: compact layout, and below 8 rows nothing is drawn or decided");
 });
