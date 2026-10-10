@@ -4,12 +4,14 @@
 //   pi-doorman view NAME [--write] live render; with --write (developer mode) a prompt line whose text is sent to the Doorman
 //                                  marked as the owner's own, never as a sandbox request
 // Config by environment (a host integration sets these): PI_DOORMAN_STATE (state root), PI_DOORMAN_MARKER, PI_DOORMAN_LABEL,
-// PI_DOORMAN_COLOR (hex, default 3b6ea5), PI_DOORMAN_UNIT_PREFIX (systemd user unit name prefix, default pi-doorman-).
+// PI_DOORMAN_COLOR (hex, default 3b6ea5), PI_DOORMAN_UNIT_PREFIX (systemd user unit name prefix, default pi-doorman-),
+// PI_DOORMAN_REVIEW_MODULE (optional, a host integration's file: its default export createReview(name) returns { current(), decide(id, choice) }; see README "Review hook").
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { execFileSync } from "node:child_process";
+import { pathToFileURL } from "node:url";
 
 export const MARKER = process.env.PI_DOORMAN_MARKER || "[owner · developer window";
 export const stateDir = (name) => path.join(process.env.PI_DOORMAN_STATE || path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "pi-doorman", "view"), name);
@@ -62,6 +64,9 @@ function log(name) {
 // ---- the window : a pinned header bar (white on the configured colour) that says which mode this is and whether typing
 // is possible right now, the conversation (scrollable: wheel, PgUp/PgDn, Shift+arrows, Home/End), a status line, and an input line that is locked (🔒) with the reason
 // whenever a line typed now would not be sent.
+// While a review item is on screen the window switches to this colour (header bar, review block, status line, input line); it is chosen
+// by the view from its own state, never from passed-through text.
+export function reviewHex() { const c = String(process.env.PI_DOORMAN_REVIEW_COLOR || "").replace(/^#/, ""); return /^[0-9A-Fa-f]{6}$/.test(c) ? c : "b3261e"; }
 export function worldHex() { const c = String(process.env.PI_DOORMAN_COLOR || "").replace(/^#/, ""); return /^[0-9A-Fa-f]{6}$/.test(c) ? c : "3b6ea5"; }
 const rgbOf = (h) => { const n = parseInt(h, 16); return `${n >> 16};${(n >> 8) & 255};${n & 255}`; };
 // Why typing is unavailable right now ("" = free). write = developer mode.
@@ -75,7 +80,7 @@ export function headerText(label, write, lock) {
   return `🚪 ${label} · ${write ? "DEVELOPER MODE" : "OBSERVER (read-only)"}${lock ? ` · 🔒 ${lock}` : " · ✎ typing on"}`;
 }
 const SEG = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const gw = (g) => (/\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
+const gw = (g) => (g === "\u0001" || g === "\u0002" ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
 export const cells = (s) => [...SEG.segment(s)].reduce((n, x) => n + gw(x.segment), 0);
 export const clipCells = (s, max) => { let n = 0, o = ""; for (const x of SEG.segment(s)) { const w = gw(x.segment); if (n + w > max) break; n += w; o += x.segment; } return o; };
 const tailCells = (s, max) => { const g = [...SEG.segment(s)].map((x) => x.segment); let n = 0, o = ""; for (let i = g.length - 1; i >= 0; i--) { const w = gw(g[i]); if (n + w > max) break; n += w; o = g[i] + o; } return o; };
@@ -103,9 +108,9 @@ export class Scrollback {
     this.w = width; this.cache = [];
     if (anchor >= 0) { let total = 0, upto = 0, nr = 1; for (let i = 0; i < this.entries.length; i++) { const n = this.rowsFor(i, width).length; total += n; if (i <= anchor) { upto = total; nr = n; } } this.offset = total - upto + Math.min(nr, Math.round(within * nr / oldRows)); } // same place inside the entry, not its end
   }
-  add(text, width) { // a new entry: the view stays where it is while scrolled up (and counts what's new)
+  add(text, width, max = 20000) { // a new entry: the view stays where it is while scrolled up (and counts what's new)
     this.setWidth(width);
-    const t = String(text).slice(0, 20000), before = this.offset > 0 ? wrapText(t, width).length : 0;
+    const t = String(text).slice(0, max), before = this.offset > 0 ? wrapText(t, width).length : 0;
     this.entries.push(t); if (this.entries.length > this.max) { this.entries.shift(); this.cache.shift(); }
     if (this.offset > 0) { this.offset += before; this.unseen++; }
   }
@@ -116,6 +121,33 @@ export class Scrollback {
   window(width, height) { this.clamp(width, height); const r = this.all(width), end = r.length - this.offset; return r.slice(Math.max(0, end - height), end); }
 }
 export const statusText = (offset, unseen) => (offset > 0 ? `↑ scrolled · End for live${unseen ? ` · ${unseen} new` : ""} · PgUp/PgDn, wheel, Home` : "wheel / PgUp / PgDn / Shift+arrows scroll · End = live");
+
+// ---- the review hook (generic): a host integration may show ONE held request at a time, from its own trusted record, and take a
+// bare choice (1 / 2 / 3) typed in this window. The window never decides anything itself; the integration's decide() does, and the
+// choice never goes to the Doorman model. Rows drawn from the integration start with \u0001 (body) or \u0002 (banner): plain() strips
+// those control characters from every sandbox / model string, so nothing the Doorman or a sandbox says can be drawn as a request.
+export const REVIEW_EARLY_MS = 2000, REVIEW_STALE_MS = 10000;
+export const isBareChoice = (line) => /^[123][.)]?$/.test(String(line ?? "").trim());
+export function reviewBlock(rv, width) {
+  const w = Math.max(10, width), rows = wrapText(plain(rv.text).replace(/\r/g, ""), w - 3).map((r) => `\u0001┃ ${r}`);
+  const offer = rv.choices.map((c) => (c === "1" ? "1 approve" : c === "2" ? "2 deny" : "3 allow similar (1 h)")).join(" · ");
+  return [`\u0002 HELD FOR YOU · ${plain(rv.id)} · from the host's own record`, ...rows, `\u0002 type ${offer}: decided on the host, never by the Doorman`].join("\n");
+}
+// What a typed line does while a review item may be showing. rv = the item on screen ({id, choices, shownAt}), cur = the integration's
+// current item now (or null), gone = { id, at } of the item that just went away. -> { kind: "chat" } | { kind: "refuse", note } | { kind: "decide", id, choice }
+export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
+  if (!isBareChoice(line)) return { kind: "chat" };
+  const k = String(line).trim()[0];
+  if (rv && cur && cur.id === rv.id) {
+    if (now - rv.shownAt < REVIEW_EARLY_MS) return { kind: "refuse", note: `that request appeared less than ${REVIEW_EARLY_MS / 1000} s ago: read it, then type your choice again` };
+    if (!rv.choices.includes(k)) return { kind: "refuse", note: `${k} isn't offered for this request (${rv.choices.join(", ")})` };
+    return { kind: "decide", id: rv.id, choice: k };
+  }
+  if (rv && cur) return { kind: "refuse", note: "a different request is now waiting: read it first, then type your choice" };
+  if (rv && !cur) return { kind: "refuse", note: `request ${plain(rv.id)} is no longer waiting (decided elsewhere or expired); nothing was sent` };
+  if (gone && now - gone.at < REVIEW_STALE_MS) return { kind: "refuse", note: `request ${plain(gone.id)} is no longer waiting (already decided or expired); nothing was sent` };
+  return { kind: "chat" }; // nothing held: an ordinary line to the Doorman
+}
 
 // Keys from the terminal, as a persistent parser (an escape sequence may arrive split across chunks). Returns events.
 export class KeyParser {
@@ -158,23 +190,31 @@ export function headerFit(label, write, lock, w) {
   return lock ? `🔒 ${lock}` : `🚪 ${m}`;
 }
 
-function view(name, write) {
+async function view(name, write) {
   const d = stateDir(name), f = path.join(d, "events.jsonl"), fifo = path.join(d, "input.fifo"), sf = path.join(d, "status.json");
-  const label = process.env.PI_DOORMAN_LABEL || name, bg = rgbOf(worldHex());
+  const label = process.env.PI_DOORMAN_LABEL || name, baseBg = rgbOf(worldHex()), revBg = rgbOf(reviewHex());
+  let bg = baseBg; // = revBg while a review item is showing
   const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3; // header, conversation, status line, input
   const P = (s) => process.stdout.write(s);
   const mode = write ? "DEVELOPER MODE" : "OBSERVER (read-only)";
   let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, started = false;
   const sb = new Scrollback();
+  let review = null, rv = null, gone = null, decidedId = "";   // the review hook (optional)
+  if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
+  const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, choices: c.choices.filter((x) => ["1", "2", "3"].includes(x)) } : null; } catch { return null; } };
+  const hostRow = (t) => `\u0002 ${plain(t)}`;
   const bar = (txt) => { const w = W(); let t = clipCells(` ${txt}`, w); t += " ".repeat(Math.max(0, w - cells(t))); return `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${t}\x1b[0m`; };
-  const prompt = () => { const pre = lock ? clipCells(`🔒 ${lock}`, Math.floor(W() / 2)) + (buf ? " · held: " : " ") : "you> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
+  const prompt = () => { const pre = rv ? "REVIEW · decide> " : lock ? clipCells(`🔒 ${lock}`, Math.floor(W() / 2)) + (buf ? " · held: " : " ") : "you> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
   // One repaint writes everything: pinned header, the wrapped conversation viewport, a status line, the input line (cursor last).
   const paint = () => {
     if (!started) return;
     const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerFit(label, write, lock, W()))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
-    for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${rows[i - (VH() - rows.length)] ?? ""}`; // short histories sit at the bottom
-    o += `\x1b[${Hh() - 1};1H\x1b[2K\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`;
-    o += `\x1b[${Hh()};1H\x1b[2K${clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", w - 1)}\x1b[?25h`;
+    const styled = (r) => (r.startsWith("\u0002") ? `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r.startsWith("\u0001") ? `\x1b[1m\x1b[48;2;70;20;18m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r);
+    for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${styled(rows[i - (VH() - rows.length)] ?? "")}`; // short histories sit at the bottom
+    const held = rv ? `▶ HELD ${rv.id}: ${write ? `type ${rv.choices.join(" / ")} to decide it` : "read-only window: decide elsewhere"}${sb.offset > 0 ? ` · ↑ scrolled${sb.unseen ? ` · ${sb.unseen} new` : ""} · End for live` : ""}` : "";
+    o += `\x1b[${Hh() - 1};1H\x1b[2K` + (held ? `\x1b[1m\x1b[48;2;${bg}m\x1b[38;2;255;255;255m${clipCells(held, w - 1)}\x1b[0m` : `\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`);
+    const inputRow = clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", w - 1);
+    o += `\x1b[${Hh()};1H\x1b[2K` + (rv && write ? `\x1b[1m\x1b[48;2;${revBg}m\x1b[38;2;255;255;255m${inputRow}${" ".repeat(Math.max(0, w - cells(inputRow)))}\x1b[0m` : inputRow) + "\x1b[?25h";
     P(o);
   };
   const out = (s) => { sb.add(plain(String(s)), W()); paint(); }; // everything shown passes plain(): no escape sequence from Doorman or sandbox text reaches the terminal
@@ -188,6 +228,11 @@ function view(name, write) {
     }
     let l = !write || !unitOk ? lockReason({ write, unitActive: unitOk }) : status.state !== "idle" && status.state !== "working" ? "status unknown" : sentAt ? "answering you; wait for it" : lockReason({ write, unitActive: unitOk, state: status.state, lastQuestion: status.question });
     if (l !== lock) { const was = lock; lock = l; if (was && !l) out("🔓 typing is on again"); else paint(); }
+    if (review) { // the integration's own record of what is held for the owner
+      const cur = readCur();
+      if (cur && (!rv || rv.id !== cur.id)) { rv = { ...cur, shownAt: Date.now() }; bg = revBg; sb.live(); sb.add(reviewBlock(rv, W()), W(), 400000); paint(); }
+      else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; if (rv.id !== decidedId) sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); rv = null; bg = baseBg; paint(); }
+    }
   };
   // History: the tail of the events log (about 400 KB, from a whole line) is loaded at start, then followed.
   let pos = 0;
@@ -212,9 +257,23 @@ function view(name, write) {
   setInterval(() => { pump(); refresh(); paint(); }, 500);
   process.stdout.on("resize", () => { sb.setWidth(W()); P("\x1b[2J"); paint(); });
   const send = () => {
+    if (review) {
+      const cur = readCur(), c = classifyLine(buf, { rv, cur, gone });
+      if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
+      if (c.kind === "decide") { // straight to the host's decision path; never to the Doorman, whatever its state
+        const id = c.id; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice})…`), W()); paint();
+        Promise.resolve().then(() => review.decide(id, c.choice)).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "no answer").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); });
+        return;
+      }
+    }
+    if (review?.suggest && !rv) { // a line the host integration recognises as a REQUEST for the sandbox ("Research: …"): trusted host input, not chat
+      let sg = null; try { sg = review.suggest(buf.trim()); } catch (e) { sg = { ok: false, text: String(e?.message ?? e) }; }
+      if (sg) { const typed = buf.trim(); buf = ""; sb.add(hostRow(`request from you: ${clip(plain(typed), 300)}`), W()); paint(); Promise.resolve(sg).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); }); return; }
+    }
     const pl = promptLine(buf);
     if (!pl) { buf = ""; return; }
     refresh();
+    if (lock && rv) { sb.add(hostRow(`not sent to the Doorman (${lock}); while a request is waiting, only 1 / 2 decide it here`), W()); buf = ""; return paint(); } // a held chat line would swallow the next bare choice
     if (lock) { out(`🔒 not sent (${lock}); your line is held, press Enter again when typing is on`); if (!buf.endsWith(" ")) buf += " "; return; }
     try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); sb.live(); out(`🧑 you: ${clip(plain(buf), 300)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
     catch (e) { out(`🔒 not sent: the Doorman's input isn't open (${e.code || e.message}); line held`); }

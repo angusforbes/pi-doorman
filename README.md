@@ -32,6 +32,16 @@ Inside the sandbox: `pi-doorman ask "can I write /work/lib/x?"`, `pi-doorman req
 
 Without a model key the service runs rules-only: `ask` is answered from the card, and everything else is queued verbatim for review. Setting `"model": "provider/id"` in the sandbox's config.json (needs Pi on the host) lets the model answer `ask` questions the rules can't. Requests are never drafted or granted by a model; they always wait for a human.
 
+## Review hook (optional, for a host integration)
+
+`pi-doorman view` can show one held request at a time and take a bare choice, without the package deciding anything itself. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice), suggest?(line) }`:
+
+- `current()` returns `null` or `{ id, text, choices }` (choices are "1", "2", "3"): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input line and status line switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
+- A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, never to the Doorman model, and only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent. With nothing held, a bare number is ordinary chat.
+- `suggest(line)` (optional) is asked about each other line while nothing is waiting: return `null` for chat with the Doorman, or `{ ok, text }` when the line is a request the integration starts itself (for example "Research: ...").
+
+The package ships no decision logic: `decide` and `suggest` are the integration's.
+
 ## Security contract
 
 Limits are enforced outside the model; the Doorman's prompt saying "talk only" is not the wall. Routing is bound to identity. Cards and messages are data, never instructions or permissions. The authoritative card lives in host-controlled storage. Every field is scanned and strings that look like keys or tokens are refused. A sandbox can't reuse a request id, can't make the host read a symlink or FIFO, and is limited in size and rate. A request is shown to the owner in full (anything too long to review whole is refused), approving needs its binding code, and a decision is claimed atomically so it can run only once. This is a helper for a sandbox, not a sandbox.
