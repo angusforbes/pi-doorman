@@ -274,9 +274,10 @@ async function view(name, write) {
       let sg = null; try { sg = review.suggest(buf.trim()); } catch (e) { sg = { ok: false, text: String(e?.message ?? e) }; }
       if (sg) { const typed = buf.trim(); buf = ""; sb.add(hostRow(`request from you: ${clip(plain(typed), 300)}`), W()); paint(); Promise.resolve(sg).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); }); return; }
     }
-    const pl = promptLine(buf);
+    refresh(); // (it also re-reads the review: a request may have arrived an instant ago)
+    const pl = promptLine(buf);   // computed AFTER the refresh: a transition clears the buffer, and a cached line must never be sent
     if (!pl) { buf = ""; return; }
-    refresh();
+    if (review && (rv || readCur()) && isBareChoice(buf)) { sb.add(hostRow("a request is waiting: read it, then type your choice; nothing was sent to the Doorman"), W()); buf = ""; return paint(); }
     if (lock && rv) { sb.add(hostRow(`not sent to the Doorman (${lock}); while a request is waiting, only 1 / 2 decide it here`), W()); buf = ""; return paint(); } // a held chat line would swallow the next bare choice
     if (lock) { out(`🔒 not sent (${lock}); your line is held, press Enter again when typing is on`); if (!buf.endsWith(" ")) buf += " "; return; }
     try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); sb.live(); out(`🧑 you: ${clip(plain(buf), 300)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
