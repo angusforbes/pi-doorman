@@ -8,7 +8,7 @@
   "keywords": ["pi-package", "pi", "sandbox", "mcp", "agents", "security"],
   "bin": { "pi-doorman": "bin/pi-doorman.mjs" },
   "pi": { "extensions": ["./extension/pi-doorman.ts"] },
-  "files": ["bin", "src", "guide", "prompts", "extension", "README.md", "LICENSE"],
+  "files": ["docs", "bin", "src", "guide", "prompts", "extension", "README.md", "LICENSE"],
   "engines": { "node": ">=20" },
   "peerDependencies": { "@earendil-works/pi-coding-agent": "*" },
   "peerDependenciesMeta": { "@earendil-works/pi-coding-agent": { "optional": true } },

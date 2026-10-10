@@ -16,6 +16,8 @@ It serves any agent (Claude Code, Codex, Cursor, Pi) through an MCP server, a CL
 
 ## Quick start
 
+A step-by-step version with no agent on the host is in [docs/quickstart.md](docs/quickstart.md); host agents through the bridge (planned) are in [docs/host-agents.md](docs/host-agents.md).
+
 ```
 pi-doorman init my-sandbox --mount rw:/work/app:workspace --mount ro:/work/lib:library --allow github.com
 pi-doorman serve my-sandbox
