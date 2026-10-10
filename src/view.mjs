@@ -155,7 +155,7 @@ export function decisionBlock(d, width, maxBody = 6) {
 // The two pinned rows under the conversation while nothing is waiting: the last decision and where that request is now.
 export function decidedRows(d) {
   if (!d) return [];
-  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" ? "•" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
+  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
   return [head, `${d.done ? "📍 now:" : "⏳ now:"} ${d.track || (d.ok === false ? d.result : "waiting for the host to act on it…")}`];
 }
 
@@ -240,7 +240,7 @@ async function view(name, write) {
     const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerFit(label, write, lock, W()))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
     const styled = (r) => (r.startsWith("\u0002") ? `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r.startsWith("\u0001") ? `\x1b[1m\x1b[48;2;70;20;18m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r);
     for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${styled(rows[i - (VH() - rows.length)] ?? "")}`; // short histories sit at the bottom
-    const pin = pinned(), pinBg = decided && (decided.ok === false || decided.verb === "DENIED") ? "90;40;40" : decided?.verb === "DECIDED ELSEWHERE" ? "60;60;70" : "30;90;50";
+    const pin = pinned(), pinBg = decided && (decided.ok === false || decided.verb === "DENIED") ? "90;40;40" : decided?.verb === "DECIDED ELSEWHERE" || decided?.verb === "NO LONGER WAITING" ? "60;60;70" : "30;90;50";
     pin.forEach((p, i) => { const r = clipCells(p.t, w); o += `\x1b[${2 + VH() + i};1H\x1b[2K\x1b[48;2;${pinBg}m\x1b[38;2;255;255;255m${p.bold ? "\x1b[1m" : ""}${r}${" ".repeat(Math.max(0, w - cells(r)))}\x1b[0m`; });
     const held = rv ? `▶ HELD ${rv.id}: ${write ? `type ${rv.choices.join(" / ")} to decide it` : "read-only window: decide elsewhere"}${sb.offset > 0 ? ` · ↑ scrolled${sb.unseen ? ` · ${sb.unseen} new` : ""} · End for live` : ""}` : "";
     o += `\x1b[${Hh() - 1};1H\x1b[2K` + (held ? `\x1b[1m\x1b[48;2;${bg}m\x1b[38;2;255;255;255m${clipCells(held, w - 1)}\x1b[0m` : `\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`);
@@ -285,7 +285,8 @@ async function view(name, write) {
     let t = null; try { t = review.track(decided.id); } catch { return; }
     if (!t || typeof t.text !== "string") return;
     // "gone" right after a decision can just be the host between removing the item and logging what it did: give it a minute before believing it
-    if (t.state === "gone" && now - decided.at < 60e3) t = { state: "pending", done: false, text: "the host is acting on it…" };
+    if (t.state === "gone" && now - decided.at < 60e3) t = { state: "pending", done: false, text: decided.verb === "DECIDED ELSEWHERE" ? "checking what happened to it…" : "the host is acting on it…" };
+    else if (t.state === "gone" && decided.verb === "DECIDED ELSEWHERE") decided.verb = "NO LONGER WAITING"; // expired or withdrawn: not a decision
     const text = plain(t.text).replace(/\s+/g, " ").trim().slice(0, 400);
     if (decided.verb === "DECIDED ELSEWHERE" && (t.state === "approved" || t.state === "denied")) { decided.verb = t.state === "approved" ? "APPROVED" : "DENIED"; decided.via = "decided elsewhere"; }
     if (text && text !== decided.track) { decided.track = text; sb.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W()); }

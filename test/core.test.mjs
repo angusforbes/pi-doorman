@@ -243,6 +243,7 @@ test("a decided request stays readable: summary, record block, pinned rows; mark
   rows = decidedRows({ ...d, verb: "DENIED", done: true, track: "denied: nothing was sent" }); assert.match(rows[0], /^✗ DENIED/); assert.equal(rows[1], "📍 now: denied: nothing was sent");
   assert.match(decidedRows({ ...d, ok: false, result: "the host refused: x" })[0], /^✗ NOT DECIDED/);
   assert.equal(decidedRows(null).length, 0);
+  assert.match(decidedRows({ ...d, verb: "NO LONGER WAITING", done: true, track: "expired" })[0], /^• NO LONGER WAITING/);
   for (const r of wrapText("\u0001┃ " + "x".repeat(25), 10)) assert.ok(r.startsWith("\u0001┃ "));
   for (const r of wrapText("\u0002 " + "y".repeat(25), 10)) assert.ok(r.startsWith("\u0002"));
   assert.equal(wrapText("\u0001┃ " + "z".repeat(25), 10).join("").replace(/\u0001┃ /g, ""), "z".repeat(25));
