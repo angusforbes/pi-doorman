@@ -322,3 +322,12 @@ test("review hook: a <answer> answers a question; refused elsewhere, empty, too 
   assert.match(blk, /a <your answer>/); assert.match(blk, /2 decline to answer/); assert.ok(!/1 approve/.test(blk));
   assert.match(decisionBlock({ id: q.id, verb: VERBS.a, note: "use G's own profile", via: "", at: now, sum: requestSummary("host agent's question\nfrom door-1\n\nWhich profile?") }, 80), /your answer: use G's own profile/);
 });
+
+import { foldedRender } from "../src/view.mjs";
+test("folded view: a host receipt is labelled as the host's, not the Doorman's; tool results are hidden", () => {
+  const r = foldedRender({ type: "message_end", message: { role: "custom", content: "[host] request x--123456 (open): failed. not opened" } });
+  assert.match(r, /from host \(the host, not the Doorman\)/); assert.ok(!/^\u0004/m.test(r), "not drawn as a result line");
+  assert.equal(foldedRender({ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: "{}" }] } }), null);
+  const q = foldedRender({ type: "message_end", message: { role: "user", content: "[Alpha, in box] hi \u0003evil" } });
+  assert.ok(!q.slice(1).includes("\u0003evil"), "outside text can't carry a style marker");
+});

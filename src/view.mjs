@@ -34,7 +34,7 @@ export function render(ev) {
   if (ev.type === "agent_start") return "── turn ──";
   if (ev.type === "message_end" && ev.message) {
     const m = ev.message, t = plain(textOf(m)).trim();
-    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `❓ ${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), FULL)}` : null;
+    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `${/^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(t) ? "⚙ host (not the Doorman): " : "❓ "}${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), FULL)}` : null;
     if (m.role === "assistant") {
       const calls = (m.content || []).filter((c) => c?.type === "toolCall").map(callText);
       return [t && `💬 ${t}`, ...calls, m.stopReason === "error" && `⚠ ${clip(m.errorMessage, 2000)}`].filter(Boolean).join("\n") || null;
@@ -257,7 +257,8 @@ export function foldedRender(ev) {
     const raw = plain(textOf(m)), ls = meaningful(raw);
     if (!ls.length) return null;
     const note = /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw); // a short "[host] request …: done" note: a result
-    if (note) return block("\u0004", ls.map((l, k) => (k ? l : `📍 ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 200);
+    // a host receipt ("[host] request …: failed"): labelled as the host's, never drawn like the Doorman's own words (Doorview)
+    if (note) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return `\u0005⚙ from ${src} (the host, not the Doorman)\n` + block("\u0005", ls.map((l, k) => (k ? l : `📍 ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 200); }
     const who = /^\[([^\]\n]{1,60})\]\s*/.exec(ls[0]), body = who ? [ls[0].slice(who[0].length), ...ls.slice(1)].filter(Boolean) : ls;
     return `\u0005${who ? `from ${who[1]}` : "request"}\n` + block("\u0003", body, 280);
   }
