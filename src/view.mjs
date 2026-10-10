@@ -34,7 +34,7 @@ export function render(ev) {
   if (ev.type === "agent_start") return "── turn ──";
   if (ev.type === "message_end" && ev.message) {
     const m = ev.message, t = plain(textOf(m)).trim();
-    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `${/^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(t) ? "⚙ host (not the Doorman): " : "❓ "}${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), FULL)}` : null;
+    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `${m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(t) ? "⚙ host (not the Doorman): " : "❓ "}${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), FULL)}` : null;
     if (m.role === "assistant") {
       const calls = (m.content || []).filter((c) => c?.type === "toolCall").map(callText);
       return [t && `💬 ${t}`, ...calls, m.stopReason === "error" && `⚠ ${clip(m.errorMessage, 2000)}`].filter(Boolean).join("\n") || null;
@@ -256,7 +256,7 @@ export function foldedRender(ev) {
   if (m.role !== "assistant") {
     const raw = plain(textOf(m)), ls = meaningful(raw);
     if (!ls.length) return null;
-    const note = /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw); // a short "[host] request …: done" note: a result
+    const note = m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw); // a short "[host] request …: done" note injected by the integration (never a typed user line)
     // a host receipt ("[host] request …: failed"): labelled as the host's, never drawn like the Doorman's own words (Doorview)
     if (note) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return `\u0005⚙ from ${src} (the host, not the Doorman)\n` + block("\u0005", ls.map((l, k) => (k ? l : `📍 ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 200); }
     const who = /^\[([^\]\n]{1,60})\]\s*/.exec(ls[0]), body = who ? [ls[0].slice(who[0].length), ...ls.slice(1)].filter(Boolean) : ls;
@@ -294,7 +294,7 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
   const shown = wrapped.slice(off, off + maxBody), more = total - off - shown.length;
   const choice = { 1: rv.edit ? "1 Approve your edit" : "1 Approve", 2: rv.answer ? "2 Decline to answer" : "2 Deny", 3: "3 Approve + similar for 1 h", e: rv.edit ? "e Edit again" : "e Edit", r: "r Send back", a: "a Answer" };
   const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r <note> adds your note", rv.choices.includes("a") && "a <your answer>", (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
-  return [
+  const rowsOut = [
     { s: "title", t: ` Needs your decision: ${itemTitle(rv)}` },
     { s: "meta", t: ` ${s.from ? s.from.replace(/^from /, "from ") + " · " : ""}${plain(rv.id)} · waiting since ${hhmm(rv.shownAt || Date.now())}` },
     ...(off > 0 ? [{ s: "more", t: `  ↑ ${off} lines above` }] : []),
@@ -303,6 +303,18 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
     { s: "choices", t: ` ${rv.choices.map((c) => choice[c] || c).join("    ")}` },
     ...(extra.length ? [{ s: "meta", t: ` ${extra.join(" · ")}` }] : []),
   ];
+  rowsOut.seen = { from: off, to: off + shown.length, total }; // which body rows are on screen (for the read-it-all gate)
+  return rowsOut;
+}
+// Fit the panel into `room` rows: drop the help rows first, then body rows from the end (with a "more" row), never the title or the choices.
+export function fitPanel(rows, room) {
+  if (rows.length <= room) return rows;
+  let r = rows.filter((x) => x.s !== "meta" || x === rows[1]); if (r.length > room) r = r.filter((x) => x.s !== "meta");
+  while (r.length > room && r.some((x) => x.s === "body")) { const i = r.map((x) => x.s).lastIndexOf("body"); r.splice(i, 1); }
+  r = r.filter((x, i) => !(x.s === "more" && r[i - 1]?.s === "more"));
+  if (r.length > room) r = r.filter((x) => x.s === "title" || x.s === "choices");
+  r.seen = { ...rows.seen, to: rows.seen.from + r.filter((x) => x.s === "body").length };
+  return r;
 }
 
 async function view(name, write) {
@@ -315,7 +327,8 @@ async function view(name, write) {
   const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(8, process.stdout.rows || 24), TOP = () => (info ? 3 : 2);
   const panel = () => (rv && write !== undefined ? panelRows(rv, W(), { maxBody: expanded ? Math.max(3, Hh() - TOP() - 8) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
-  const VH = (pn = panel().length) => Math.max(1, Hh() - TOP() + 1 - pn - 2 - (pn ? 1 : 0));
+  const panelFit = () => { const p = panel(); if (!p.length) return p; const f = fitPanel(p, Math.max(2, Hh() - TOP() - 3)); if (rv) { const sn = f.seen; if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; } return f; };
+  const VH = (pn = panelFit().length) => Math.max(1, Hh() - TOP() + 1 - pn - 2 - (pn ? 1 : 0));
   const P = (x) => process.stdout.write(x);
   let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
   const hostRow = (t) => `\u0002 ${plain(t)}`;
@@ -340,7 +353,7 @@ async function view(name, write) {
   };
   const paint = () => {
     if (!started || editing) return;
-    const w = W(), pn = panel(), vh = VH(pn.length), rows = sbv().window(w - 1, vh);
+    const w = W(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 1, vh);
     let o = `\x1b[?25l\x1b[1;1H\x1b[2K\x1b[1m 🚪 ${clipCells(label, 40)}\x1b[0m\x1b[2m · requests, results and your decisions · ${full ? "full log (Tab: folded)" : "Tab: full log"} · ${write ? "type only your decision" : "read-only"}\x1b[0m\x1b]2;🚪 ${label}\x07`;
     if (info) o += `\x1b[2;1H\x1b[2K\x1b[2m${clipCells(" " + info, w)}\x1b[0m`;
     for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "", w)}`;
@@ -414,6 +427,8 @@ async function view(name, write) {
     if (c.kind === "ignore") { say(rv ? `only a decision can be typed here: ${rv.choices.join(" / ")}` : "nothing is waiting for a decision"); buf = ""; return paint(); }
     if (c.kind === "refuse") { say(c.note); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
+    // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
+    if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space, then PgDn to its end; nothing was decided"); buf = ""; return paint(); }
     const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
     const dd = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
@@ -439,17 +454,18 @@ async function view(name, write) {
     { const k = text.indexOf(HINT_MARK); if (k >= 0) text = text.slice(0, k); } text = text.replace(/\r/g, "").replace(/\s+$/, "");
     text = plain(text.replace(/\t/g, " ")).replace(/\n{3,}/g, "\n\n").slice(0, 20000);
     if (!text.trim() || text === original) { say(text === original ? "no change: nothing edited" : "empty: edit cancelled"); return paint(); }
-    rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); panelOff = 0; // the 2 s rule starts again
+    rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); panelOff = 0; rv.readTo = 0; rv.readAll = false; // the 2 s rule starts again
     sbF.add(editedBlock(id, rv.edit.original, text, W() - 1), W() - 1, 400000); say("your edit is shown in the panel; type 1 to approve it"); P("\x1b[2J"); paint();
   };
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8"); process.stdin.resume();
   const keys = new KeyParser(), page = () => Math.max(1, VH() - 1);
-  const scroll = (n) => { if (rv && expanded) panelOff = Math.max(0, panelOff - n); else sbv().scrollBy(n, W() - 1, VH()); };
+  const panelPage = () => Math.max(1, (panelFit().seen?.to ?? 1) - (panelFit().seen?.from ?? 0) - 1);
+  const scroll = (n, pg) => { if (rv && expanded) panelOff = Math.max(0, panelOff - (pg ? Math.sign(n) * panelPage() : n)); else sbv().scrollBy(n, W() - 1, VH()); };
   process.stdin.on("data", (chunk) => {
     for (const e of keys.feed(chunk)) {
       if (e.k === "quit") quit();
-      else if (e.k === "pgup") scroll(page()); else if (e.k === "pgdn") scroll(-page());
+      else if (e.k === "pgup") scroll(page(), true); else if (e.k === "pgdn") scroll(-page(), true);
       else if (e.k === "sup" || e.k === "wheelup") scroll(e.k === "sup" ? 1 : 3); else if (e.k === "sdown" || e.k === "wheeldown") scroll(e.k === "sdown" ? -1 : -3);
       else if (e.k === "home") sbv().top(W() - 1, VH()); else if (e.k === "end") { sbv().live(); panelOff = 0; }
       else if (e.k === "char" && e.c === "\t") { full = !full; P("\x1b[2J"); }
