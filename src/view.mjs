@@ -90,8 +90,10 @@ const unitIsActive = (name) => { try { execFileSync("systemctl", ["--user", "is-
 export function wrapText(text, width) {
   const w = Math.max(1, width), rows = [];
   for (const line of String(text).replace(/\t/g, "    ").split("\n")) {
+    // a row drawn from the integration (\u0001 body / \u0002 banner) stays marked on every wrapped row, so its colour never breaks off
+    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : "", mw = cells(mk) < w ? cells(mk) : 0;
     let cur = "", n = 0;
-    for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur) { rows.push(cur); cur = ""; n = 0; } cur += x.segment; n += g; }
+    for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur && n > mw) { rows.push(cur); cur = mw ? mk : mk[0] || ""; n = mw; } cur += x.segment; n += g; }
     rows.push(cur);
   }
   return rows;
@@ -133,6 +135,30 @@ export function reviewBlock(rv, width) {
   const offer = rv.choices.map((c) => (c === "1" ? "1 approve" : c === "2" ? "2 deny" : "3 allow similar (1 h)")).join(" · ");
   return [`\u0002 HELD FOR YOU · ${plain(rv.id)} · from the host's own record`, ...rows, `\u0002 type ${offer}: decided on the host, never by the Doorman`].join("\n");
 }
+// After a decision the owner must still see WHAT was decided and WHERE the request went (owner feedback: once approved, the request vanished):
+// what a decided request was, in a few lines, from the integration's own text (line 1 kind, line 2 "from … → …", then the body).
+export function requestSummary(text) {
+  const lines = plain(text).split("\n").map((l) => l.replace(/\s+/g, " ").trim());
+  const kind = lines[0] || "request", from = /^from /.test(lines[1] || "") ? lines[1] : "";
+  const rest = lines.slice(from ? 2 : 1), cut = rest.findIndex((l) => /^-{3}/.test(l)); // a "--- the deliverable ---" part is not summarised
+  const body = (cut < 0 ? rest : rest.slice(0, cut)).filter(Boolean);
+  return { kind, from, body };
+}
+export const VERBS = { "1": "APPROVED", "2": "DENIED", "3": "ALLOWED SIMILAR (1 h)" };
+const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// The record that goes into the conversation once a decision is made: what it was, so it stays readable after the long request scrolls away.
+export function decisionBlock(d, width, maxBody = 6) {
+  const w = Math.max(10, width), s = d.sum, more = s.body.length > maxBody;
+  const rows = [s.kind + (s.from ? ` · ${s.from}` : ""), ...s.body.slice(0, maxBody).map((l) => clip(l, 400)), ...(more ? [`… ${s.body.length - maxBody} more lines (the full request is above: PgUp / Home)`] : [])];
+  return [`\u0002 ${d.ok === false ? "✗ NOT DECIDED" : d.verb} · ${plain(d.id)} · ${hhmm(d.at)}${d.via ? ` · ${d.via}` : ""} · what it was:`, ...rows.flatMap((r) => wrapText(plain(r), w - 3).map((x) => `\u0001┃ ${x}`))].join("\n");
+}
+// The two pinned rows under the conversation while nothing is waiting: the last decision and where that request is now.
+export function decidedRows(d) {
+  if (!d) return [];
+  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" ? "•" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
+  return [head, `${d.done ? "📍 now:" : "⏳ now:"} ${d.track || (d.ok === false ? d.result : "waiting for the host to act on it…")}`];
+}
+
 // What a typed line does while a review item may be showing. rv = the item on screen ({id, choices, shownAt}), cur = the integration's
 // current item now (or null), gone = { id, at } of the item that just went away. -> { kind: "chat" } | { kind: "refuse", note } | { kind: "decide", id, choice }
 export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
@@ -195,7 +221,9 @@ async function view(name, write) {
   const d = stateDir(name), f = path.join(d, "events.jsonl"), fifo = path.join(d, "input.fifo"), sf = path.join(d, "status.json");
   const label = process.env.PI_DOORMAN_LABEL || name, baseBg = rgbOf(worldHex()), revBg = rgbOf(reviewHex());
   let bg = baseBg; // = revBg while a review item is showing
-  const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3; // header, conversation, status line, input
+  let decided = null; // the last decision made (here or elsewhere) and where it stands now, pinned under the conversation while nothing is waiting
+  const pinned = () => (decided && !rv && Hh() >= 12 ? decidedRows(decided).flatMap((t, k) => { const r = wrapText(t, W() - 2); return (r.length > 2 ? [r[0], clipCells(r[1], W() - 3) + "…"] : r).map((x) => ({ t: ` ${x}`, bold: k === 0 })); }) : []); // each of the two rows wraps to at most 2
+  const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3 - pinned().length; // header, conversation, pinned decision, status line, input
   const P = (s) => process.stdout.write(s);
   const mode = write ? "DEVELOPER MODE" : "OBSERVER (read-only)";
   let lock = "", buf = "", unitOk = true, status = {}, sentAt = 0, seenWorking = false, started = false;
@@ -212,6 +240,8 @@ async function view(name, write) {
     const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerFit(label, write, lock, W()))}\x1b]2;🚪 ${label} · ${mode}${lock ? " 🔒" : ""}\x07`;
     const styled = (r) => (r.startsWith("\u0002") ? `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r.startsWith("\u0001") ? `\x1b[1m\x1b[48;2;70;20;18m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r);
     for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${styled(rows[i - (VH() - rows.length)] ?? "")}`; // short histories sit at the bottom
+    const pin = pinned(), pinBg = decided && (decided.ok === false || decided.verb === "DENIED") ? "90;40;40" : decided?.verb === "DECIDED ELSEWHERE" ? "60;60;70" : "30;90;50";
+    pin.forEach((p, i) => { const r = clipCells(p.t, w); o += `\x1b[${2 + VH() + i};1H\x1b[2K\x1b[48;2;${pinBg}m\x1b[38;2;255;255;255m${p.bold ? "\x1b[1m" : ""}${r}${" ".repeat(Math.max(0, w - cells(r)))}\x1b[0m`; });
     const held = rv ? `▶ HELD ${rv.id}: ${write ? `type ${rv.choices.join(" / ")} to decide it` : "read-only window: decide elsewhere"}${sb.offset > 0 ? ` · ↑ scrolled${sb.unseen ? ` · ${sb.unseen} new` : ""} · End for live` : ""}` : "";
     o += `\x1b[${Hh() - 1};1H\x1b[2K` + (held ? `\x1b[1m\x1b[48;2;${bg}m\x1b[38;2;255;255;255m${clipCells(held, w - 1)}\x1b[0m` : `\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`);
     const inputRow = clipCells(write ? prompt() : "🔒 read-only: ctrl-c to close this window", w - 1);
@@ -229,13 +259,34 @@ async function view(name, write) {
     }
     let l = !write || !unitOk ? lockReason({ write, unitActive: unitOk }) : status.state !== "idle" && status.state !== "working" ? "status unknown" : sentAt ? "answering you; wait for it" : lockReason({ write, unitActive: unitOk, state: status.state, lastQuestion: status.question });
     if (l !== lock) { const was = lock; lock = l; if (was && !l) out("🔓 typing is on again"); else paint(); }
-    pollReview();
+    pollReview(); pollTrack();
   };
   const pollReview = () => { // the integration's own record of what is held for the owner; also run when a line is sent, so a request that appeared an instant ago is on screen (and counts as too early) before the line is classified
     if (!review) return;
     const cur = readCur();
     if (cur && (!rv || rv.id !== cur.id)) { if (buf) { buf = ""; sb.add(hostRow("what you had typed was cleared: a request arrived; type your choice after reading it"), W()); } rv = { ...cur, shownAt: Date.now() }; bg = revBg; sb.live(); sb.add(reviewBlock(rv, W()), W(), 400000); paint(); }
-    else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; buf = ""; if (rv.id !== decidedId) sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); rv = null; bg = baseBg; paint(); }
+    else if (!cur && rv) {
+      gone = { id: rv.id, at: Date.now() }; buf = "";
+      if (rv.id !== decidedId) { // decided somewhere else (a notification, another panel) or expired: still say what it was, and follow it
+        decided = { id: rv.id, verb: "DECIDED ELSEWHERE", via: "", at: Date.now(), sum: requestSummary(rv.text), track: "", done: false };
+        sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); sb.add(decisionBlock(decided, W()), W(), 400000); trackAt = 0;
+      }
+      rv = null; bg = baseBg; paint();
+    }
+  };
+  // Where the last decided request is now: the integration's optional track(id) -> { state, text, done }, polled until done (or 30 min).
+  let trackAt = 0;
+  const pollTrack = () => {
+    if (!decided || decided.done || decided.ok === false || !review?.track) return;
+    const now = Date.now(); if (now - trackAt < 1500) return; trackAt = now;
+    if (now - decided.at > 30 * 60e3) { decided.done = true; decided.track = `${decided.track || "no news from the host"} (stopped following after 30 min)`; return paint(); }
+    let t = null; try { t = review.track(decided.id); } catch { return; }
+    if (!t || typeof t.text !== "string") return;
+    const text = plain(t.text).replace(/\s+/g, " ").trim().slice(0, 400);
+    if (decided.verb === "DECIDED ELSEWHERE" && (t.state === "approved" || t.state === "denied")) { decided.verb = t.state === "approved" ? "APPROVED" : "DENIED"; decided.via = "decided elsewhere"; }
+    if (text && text !== decided.track) { decided.track = text; sb.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W()); }
+    if (t.done) decided.done = true;
+    paint();
   };
   // History: the tail of the events log (about 400 KB, from a whole line) is loaded at start, then followed.
   let pos = 0;
@@ -265,8 +316,15 @@ async function view(name, write) {
       const cur = readCur(), c = classifyLine(buf, { rv, cur, gone });
       if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
       if (c.kind === "decide") { // straight to the host's decision path; never to the Doorman, whatever its state
-        const id = c.id; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice})…`), W()); paint();
-        Promise.resolve().then(() => review.decide(id, c.choice)).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "no answer").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); });
+        const id = c.id; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice})…`), W());
+        const d = decided = { id, verb: VERBS[c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), track: "", done: false }; trackAt = 0; paint();
+        const settle = (ok, text) => { // the record of what was decided stays in the conversation, and pinned under it
+          if (!ok) { d.ok = false; d.result = `the host refused: ${text}`; }
+          sb.add(decisionBlock(d, W()), W(), 400000);
+          if (text || !ok) sb.add(hostRow(`${ok ? "✓" : "✗"} ${text || "no answer"}`), W());
+          sb.live(); paint();
+        };
+        Promise.resolve().then(() => review.decide(id, c.choice)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
         return;
       }
     }

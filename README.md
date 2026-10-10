@@ -34,10 +34,12 @@ Without a model key the service runs rules-only: `ask` is answered from the card
 
 ## Review hook (optional, for a host integration)
 
-`pi-doorman view` can show one held request at a time and take a bare choice, without the package deciding anything itself. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice), suggest?(line) }`:
+`pi-doorman view` can show one held request at a time and take a bare choice, without the package deciding anything itself. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice), suggest?(line), track?(id) }`:
 
 - `current()` returns `null` or `{ id, text, choices }` (choices are "1", "2", "3"): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input line and status line switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
 - A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, never to the Doorman model, and only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent. With nothing held, a bare number is ordinary chat.
+- After a decision (made here, or elsewhere so the item simply went away) the window keeps a record of what it was in the conversation (its kind, sender and first lines), and pins two rows under the conversation while nothing is waiting: the last decision, and where that request is now.
+- `track(id)` (optional) feeds that second row: return `{ state, text, done }` (state `pending` / `approved` / `denied` / `gone`). The window polls it every 1.5 s until `done` (at most 30 minutes) and adds each new `text` to the conversation too.
 - `suggest(line)` (optional) is asked about each other line while nothing is waiting: return `null` for chat with the Doorman, or `{ ok, text }` when the line is a request the integration starts itself (for example "Research: ...").
 
 The package ships no decision logic: `decide` and `suggest` are the integration's.

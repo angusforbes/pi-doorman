@@ -229,3 +229,22 @@ test("review hook: model or sandbox text can't be drawn as a request", () => {
 test("review hook: a request that appeared an instant ago can't take a bare number as chat (race)", () => {
   assert.equal(classifyLine("1", { rv: null, cur: { id: "n--000001" }, now: 5000 }).kind, "refuse");
 });
+
+import { requestSummary, decisionBlock, decidedRows } from "../src/view.mjs";
+test("a decided request stays readable: summary, record block, pinned rows; marked rows stay marked when wrapped", () => {
+  const s = requestSummary("research deliverable\nfrom box-1 → box-1 (research result)\n\nResearch (quick): perovskite\nsecond line\n--- the deliverable, in full ---\nnot summarised");
+  assert.equal(s.kind, "research deliverable"); assert.equal(s.from, "from box-1 → box-1 (research result)"); assert.deepEqual(s.body, ["Research (quick): perovskite", "second line"]);
+  const d = { id: "w--abcdef", verb: "APPROVED", via: "", at: Date.parse("2026-10-10T00:28:00Z"), sum: s, track: "", done: false };
+  const b = decisionBlock(d, 40).split("\n");
+  assert.ok(b[0].startsWith("\u0002 APPROVED · w--abcdef")); assert.ok(b.slice(1).every((r) => r.startsWith("\u0001┃ "))); assert.ok(!b.join("").includes("not summarised"));
+  const long = decisionBlock({ ...d, sum: { ...s, body: Array.from({ length: 9 }, (_, i) => `l${i}`) } }, 80);
+  assert.match(long, /… 3 more lines/);
+  let rows = decidedRows(d); assert.equal(rows.length, 2); assert.match(rows[0], /^✓ APPROVED .* research deliverable/); assert.match(rows[1], /^⏳ now: waiting/);
+  rows = decidedRows({ ...d, verb: "DENIED", done: true, track: "denied: nothing was sent" }); assert.match(rows[0], /^✗ DENIED/); assert.equal(rows[1], "📍 now: denied: nothing was sent");
+  assert.match(decidedRows({ ...d, ok: false, result: "the host refused: x" })[0], /^✗ NOT DECIDED/);
+  assert.equal(decidedRows(null).length, 0);
+  for (const r of wrapText("\u0001┃ " + "x".repeat(25), 10)) assert.ok(r.startsWith("\u0001┃ "));
+  for (const r of wrapText("\u0002 " + "y".repeat(25), 10)) assert.ok(r.startsWith("\u0002"));
+  assert.equal(wrapText("\u0001┃ " + "z".repeat(25), 10).join("").replace(/\u0001┃ /g, ""), "z".repeat(25));
+  assert.deepEqual(wrapText("plain " + "w".repeat(10), 8), ["plain ww", "wwwwwwww"]); // unmarked rows unchanged
+});
