@@ -301,3 +301,24 @@ test("r <note> sends an item back and 2 <reason> denies with a reason; both clea
   assert.match(rec, /SENT BACK WITH YOUR NOTE/); assert.match(rec, /your note: use plainer words/);
   assert.match(decidedRows({ id: "a--111111", verb: VERBS.r, at: now, sum: requestSummary("message"), track: "", done: false })[0], /^↩ SENT BACK/);
 });
+
+// J385: "a <answer>" on a host agent's question (an integration offers "a" only on such items)
+test("review hook: a <answer> answers a question; refused elsewhere, empty, too long, or with control characters", () => {
+  const now = 100000, q = { id: "d--abc123", choices: ["a", "2"], answer: true, shownAt: now - 5000 }, cur = { id: "d--abc123" };
+  assert.deepEqual(classifyLine("a use G's own profile", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "a", note: "use G's own profile" });
+  assert.deepEqual(classifyLine("A:  two   spaces ", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "a", note: "two spaces" });
+  assert.equal(classifyLine("a", { rv: q, cur, now }).kind, "refuse");                                                        // no answer
+  assert.match(classifyLine("a", { rv: q, cur, now }).note, /type a followed by your answer/);
+  assert.equal(classifyLine("a " + "x".repeat(501), { rv: q, cur, now }).kind, "refuse");                                     // too long: refused, never cut
+  assert.match(classifyLine("a " + "x".repeat(501), { rv: q, cur, now }).note, /your answer is 501 characters; at most 500/);
+  for (const bad of ["a yes\u001b[31m", "a yes\u202edoc.exe", "a ok\u0007", "a hi\u200bthere"]) assert.equal(classifyLine(bad, { rv: q, cur, now }).kind, "refuse", JSON.stringify(bad));
+  assert.equal(classifyLine("a yes", { rv: { ...q, shownAt: now - 500 }, cur, now }).kind, "refuse");                          // the 2 s rule
+  assert.equal(classifyLine("a yes", { rv: q, cur: { id: "e--999999" }, now }).kind, "refuse");                               // one at a time
+  const msg = { id: "m--111111", choices: ["1", "2", "3"], shownAt: now - 5000 };
+  assert.equal(classifyLine("a sure", { rv: msg, cur: { id: "m--111111" }, now }).kind, "refuse");                            // not a question: not offered
+  assert.match(classifyLine("a sure", { rv: msg, cur: { id: "m--111111" }, now }).note, /a isn't offered/);
+  assert.deepEqual(classifyLine("2", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "2" });               // decline
+  const blk = reviewBlock({ ...q, text: "host agent's question\nfrom door-1 → the owner\n\nWhich profile?" }, 80);
+  assert.match(blk, /a <your answer>/); assert.match(blk, /2 decline to answer/); assert.ok(!/1 approve/.test(blk));
+  assert.match(decisionBlock({ id: q.id, verb: VERBS.a, note: "use G's own profile", via: "", at: now, sum: requestSummary("host agent's question\nfrom door-1\n\nWhich profile?") }, 80), /your answer: use G's own profile/);
+});
