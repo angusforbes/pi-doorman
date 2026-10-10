@@ -284,7 +284,7 @@ test("r <note> sends an item back and 2 <reason> denies with a reason; both clea
   const now = 100000, cur = { id: "a--111111" }, rv = { id: "a--111111", choices: ["1", "2", "r"], reason: true, shownAt: now - 5000 };
   assert.deepEqual(classifyLine("r use plainer words", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "use plainer words" });
   assert.deepEqual(classifyLine("R: shorter, please", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "shorter, please" });
-  assert.equal(classifyLine("r", { rv, cur, now }).kind, "refuse");                                          // a note is required
+  assert.deepEqual(classifyLine("r", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r" }); // a bare r: the hold's own reason goes back (the note is optional)
   assert.deepEqual(classifyLine("2 not on task", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2", note: "not on task" });
   assert.deepEqual(classifyLine("2", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2" }); // plain deny still works
   assert.equal(classifyLine("2 not on task", { rv: { ...rv, reason: false }, cur, now }).kind, "refuse");  // no reason for this kind

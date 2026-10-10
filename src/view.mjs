@@ -185,7 +185,6 @@ export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
   if (rv && cur && cur.id === rv.id) {
     if (now - rv.shownAt < REVIEW_EARLY_MS) return { kind: "refuse", note: `that request appeared less than ${REVIEW_EARLY_MS / 1000} s ago: read it, then type your choice again` };
     if (!rv.choices.includes(k)) return { kind: "refuse", note: `${k} isn't offered for this request (${rv.choices.join(", ")})` };
-    if (k === "r" && !note) return { kind: "refuse", note: "type r followed by your note, e.g. r use plainer words; nothing was sent" };
     if (k === "a" && !note) return { kind: "refuse", note: "type a followed by your answer, e.g. a use G's own browser profile; nothing was sent" };
     if (k === "a" && cl.bad) return { kind: "refuse", note: "your answer has control or invisible formatting characters; type it again as plain text. Nothing was sent" };
     if (note && k === "2" && !rv.reason) return { kind: "refuse", note: "this request can't carry a reason: type 2 alone to deny it" };
@@ -299,7 +298,7 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
   const wrapped = body.flatMap((l) => wrapText(MDX(l), w - 2)), total = wrapped.length, off = Math.max(0, Math.min(offset, Math.max(0, total - maxBody)));
   const shown = wrapped.slice(off, off + maxBody), more = total - off - shown.length;
   const choice = { 1: rv.edit ? "1 Approve your edit" : "1 Approve", 2: rv.answer ? "2 Decline to answer" : "2 Deny", 3: "3 Approve + similar for 1 h", e: rv.edit ? "e Edit again" : "e Edit", r: "r Send back", a: "a Answer" };
-  const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r <note> adds your note", rv.choices.includes("a") && "a <your answer>", maxBody > 0 && (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
+  const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r sends it back with why it was held (r <note> adds yours)", rv.choices.includes("a") && "a <your answer>", maxBody > 0 && (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
   const rowsOut = [
     { s: "title", t: ` Needs your decision: ${itemTitle(rv)}` },
     { s: "meta", t: ` ${s.from ? s.from.replace(/^from /, "from ") + " · " : ""}${plain(rv.id)} · waiting since ${hhmm(rv.shownAt || Date.now())}` },
