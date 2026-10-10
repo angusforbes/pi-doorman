@@ -305,7 +305,7 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
     { s: "meta", t: ` ${s.from ? s.from.replace(/^from /, "from ") + " · " : ""}${plain(rv.id)} · waiting since ${hhmm(rv.shownAt || Date.now())}` },
     ...(off > 0 ? [{ s: "more", t: `  ↑ ${off} lines above` }] : []),
     ...shown.map((t) => ({ s: "body", t: ` ${t}` })),
-    ...(more > 0 ? [{ s: "more", t: `  … ${more} more lines (Space: read all)` }] : []),
+    ...(more > 0 ? [{ s: "more", t: `  … ${more} more lines (Space: ${offset > 0 || maxBody > 50 ? "next page" : "read all"})` }] : []),
     { s: "choices", t: ` ${rv.choices.map((c) => choice[c] || c).join("    ")}` },
     ...(extra.length ? [{ s: "meta", t: ` ${extra.join(" · ")}` }] : []),
   ];
@@ -336,7 +336,7 @@ async function view(name, write) {
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(1, process.stdout.rows || 24), TOP = () => 2, MIN_H = 8;
   const compact = () => Hh() < 12, BOTTOM_ = () => (compact() ? 3 : 4); // a short window drops the status line (notices go on the input line's hint) and the gap above the panel
   const accent = rgbOf(worldHex()), PROMPT = plain(process.env.PI_DOORMAN_PROMPT || "").slice(0, 8);
-  const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: expanded ? Math.max(3, Hh() - 10) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
+  const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: expanded ? 100000 : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
   // the body gets exactly the rows that fit, so paging (whose end is total minus the shown rows) can always reach the last line (LayoutReview)
   const panelFit = () => {
     let p = panel(); if (!p.length) return p; const room = Math.max(3, Hh() - 1 - BOTTOM_() - (compact() ? 1 : 2));
@@ -393,7 +393,7 @@ async function view(name, write) {
     const hint = compact() && fresh && !buf ? `  ${notice.t}` : !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
     const hintC = clipCells(hint, Math.max(0, w - 1 - cells(pre) - cells(typed))); // never wider than the line (a long notice can't scroll the screen)
     o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hintC) : D(clipCells(pre + typed + hint, w - 1))}`;
-    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · Space read all · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
+    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · ${rv ? (expanded ? "Space next page" : "Space read all") : ""}${rv ? " · " : ""}^C close `, mid = Math.max(0, w - cells(left) - cells(right));
     o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
     o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
     P(o);
@@ -463,7 +463,7 @@ async function view(name, write) {
     if (inflight === c.id) { say("your decision on this request is still being made on the host"); buf = ""; return paint(); } // one decision at a time per item, even two in one keystroke chunk (the integration enforces decide-once)
     if (Hh() < MIN_H) { say("make the window taller to decide"); buf = ""; return paint(); }
     // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
-    if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space, then PgDn to its end; nothing was decided"); buf = ""; return paint(); }
+    if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space (again for each page) to its end; nothing was decided"); buf = ""; return paint(); }
     const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
     const dd = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
@@ -505,7 +505,13 @@ async function view(name, write) {
       else if (e.k === "sup" || e.k === "wheelup") scroll(e.k === "sup" ? 1 : 3); else if (e.k === "sdown" || e.k === "wheeldown") scroll(e.k === "sdown" ? -1 : -3);
       else if (e.k === "home") sbv().top(W() - 5, VH()); else if (e.k === "end") { sbv().live(); panelOff = 0; }
       else if (e.k === "char" && e.c === "\t") { full = !full; P("\x1b[2J"); }
-      else if (e.k === "char" && e.c === " " && !buf && rv) { expanded = !expanded; panelOff = 0; P("\x1b[2J"); }
+      // Space, like a pager (owner: a long deliverable must not take a dozen PgDns): the first opens the request over the whole window, each next
+      // one shows the next page, and at the end it closes again. Every line is still drawn on the way, so the read check still holds.
+      else if (e.k === "char" && e.c === " " && !buf && rv) {
+        if (!expanded) { expanded = true; panelOff = 0; }
+        else { const sn = panelFit().seen || { to: 0, total: 0 }; if (sn.to >= sn.total) { expanded = false; panelOff = 0; } else panelOff = Math.min(sn.total, panelOff + panelPage()); }
+        P("\x1b[2J");
+      }
       else if (!write) continue;
       else if (e.k === "enter") send();
       else if (e.k === "backspace") { buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join(""); if (!buf) pasteDirty = false; } // (an emptied box forgets the paste at once, AnswerReview)
