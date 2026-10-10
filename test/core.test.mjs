@@ -337,6 +337,10 @@ test("decision panel: read tracking, fits small windows without losing the choic
   const rv = { id: "a--111111", text: "message\nfrom w → x\n\n" + Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n"), choices: ["1", "2"], shownAt: 0 };
   const p = panelRows(rv, 80, { maxBody: 15 }); assert.deepEqual(p.seen, { from: 0, to: 15, total: 100 });
   const f = fitPanel(p, 4); assert.ok(f.some((x) => x.s === "choices") && f.some((x) => x.s === "title")); assert.ok(f.length <= 4);
+  // a tiny room still shows one body row at every offset, so every line can be reached
+  const small = { ...rv, text: "message\nfrom w → x\n\n" + Array.from({ length: 10 }, (_, i) => `line${i + 1}`).join("\n") }; let to = 0;
+  for (let off = 0; off < 10; off++) { const g = fitPanel(panelRows(small, 80, { maxBody: 1, offset: off }), 3); assert.equal(g.filter((x) => x.s === "body").length, 1, `offset ${off}`); if (g.seen.from <= to) to = Math.max(to, g.seen.to); }
+  assert.equal(to, 10, "every line reached");
   const end = panelRows(rv, 80, { maxBody: 15, offset: 85 }); assert.equal(end.seen.to, 100);
   assert.equal(foldedRender({ type: "message_end", message: { role: "user", content: "[relay] request x approved" } }).includes("the host"), false, "a user line can't pose as the host");
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");

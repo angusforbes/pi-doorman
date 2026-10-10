@@ -308,11 +308,12 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
 }
 // Fit the panel into `room` rows: drop the help rows first, then body rows from the end (with a "more" row), never the title or the choices.
 export function fitPanel(rows, room) {
+  // over the room: drop help rows, then the "more above / below" hints, then body rows down to ONE; the title, one body row and the choices
+  // always stay, so paging can show every line of the request (LayoutReview)
   if (rows.length <= room) return rows;
   let r = rows.filter((x) => x.s !== "meta" || x === rows[1]); if (r.length > room) r = r.filter((x) => x.s !== "meta");
-  while (r.length > room && r.some((x) => x.s === "body")) { const i = r.map((x) => x.s).lastIndexOf("body"); r.splice(i, 1); }
-  r = r.filter((x, i) => !(x.s === "more" && r[i - 1]?.s === "more"));
-  if (r.length > room) r = r.filter((x) => x.s === "title" || x.s === "choices");
+  if (r.length > room) r = r.filter((x) => x.s !== "more");
+  while (r.length > room && r.filter((x) => x.s === "body").length > 1) { const i = r.map((x) => x.s).lastIndexOf("body"); r.splice(i, 1); }
   r.seen = { ...rows.seen, to: rows.seen.from + r.filter((x) => x.s === "body").length };
   return r;
 }
@@ -327,7 +328,12 @@ async function view(name, write) {
   const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(8, process.stdout.rows || 24), TOP = () => (info ? 3 : 2);
   const panel = () => (rv && write !== undefined ? panelRows(rv, W(), { maxBody: expanded ? Math.max(3, Hh() - TOP() - 8) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
-  const panelFit = () => { const p = panel(); return p.length ? fitPanel(p, Math.max(2, Hh() - TOP() - 3)) : p; };
+  // the body gets exactly the rows that fit, so paging (whose end is total minus the shown rows) can always reach the last line (LayoutReview)
+  const panelFit = () => {
+    let p = panel(); if (!p.length) return p; const room = Math.max(2, Hh() - TOP() - 3);
+    if (p.length > room) { const fixed = p.filter((x) => x.s === "title" || x.s === "choices").length; p = panelRows(rv, W(), { maxBody: Math.max(1, room - fixed), offset: panelOff }); }
+    return fitPanel(p, room);
+  };
   // read coverage is marked only for rows actually drawn (in paint), never for pages computed in between (LayoutReview)
   const markRead = (f) => { if (!rv || !f.seen) return; const sn = f.seen, w = W(); if (rv.readW !== w) { rv.readW = w; rv.readTo = 0; rv.readAll = false; } if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; };
   const VH = (pn = panelFit().length) => Math.max(1, Hh() - TOP() + 1 - pn - 2 - (pn ? 1 : 0));
