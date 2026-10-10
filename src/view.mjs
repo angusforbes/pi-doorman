@@ -264,16 +264,18 @@ async function view(name, write) {
   const pollReview = () => { // the integration's own record of what is held for the owner; also run when a line is sent, so a request that appeared an instant ago is on screen (and counts as too early) before the line is classified
     if (!review) return;
     const cur = readCur();
+    if (cur && rv && rv.id !== cur.id && rv.id !== decidedId) lost(rv); // the one on screen went (decided elsewhere) and the next is already waiting
     if (cur && (!rv || rv.id !== cur.id)) { if (buf) { buf = ""; sb.add(hostRow("what you had typed was cleared: a request arrived; type your choice after reading it"), W()); } rv = { ...cur, shownAt: Date.now() }; bg = revBg; sb.live(); sb.add(reviewBlock(rv, W()), W(), 400000); paint(); }
     else if (!cur && rv) {
       gone = { id: rv.id, at: Date.now() }; buf = "";
-      if (rv.id !== decidedId) { // decided somewhere else (a notification, another panel) or expired: still say what it was, and follow it
-        decided = { id: rv.id, verb: "DECIDED ELSEWHERE", via: "", at: Date.now(), sum: requestSummary(rv.text), track: "", done: false };
-        sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); sb.add(decisionBlock(decided, W()), W(), 400000); trackAt = 0;
-      }
+      if (rv.id !== decidedId) lost(rv);
       rv = null; bg = baseBg; paint();
     }
   };
+  function lost(item) { // decided somewhere else (a notification, another panel) or expired: still say what it was, and follow it
+    decided = { id: item.id, verb: "DECIDED ELSEWHERE", via: "", at: Date.now(), sum: requestSummary(item.text), track: "", done: false };
+    sb.add(hostRow(`request ${item.id} is no longer waiting (decided elsewhere or expired)`), W()); sb.add(decisionBlock(decided, W()), W(), 400000); trackAt = 0;
+  }
   // Where the last decided request is now: the integration's optional track(id) -> { state, text, done }, polled until done (or 30 min).
   let trackAt = 0;
   const pollTrack = () => {
