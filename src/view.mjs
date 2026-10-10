@@ -75,7 +75,7 @@ export function headerText(label, write) {
   return `🚪 ${label} · ${write ? "ARCHIVE + DECISIONS ONLY" : "ARCHIVE (read-only)"} · nothing typed here reaches the Doorman`;
 }
 const SEG = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const gw = (g) => (/^[\u0001-\u0007]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
+const gw = (g) => (/^[\u0001-\u0008]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
 export const cells = (s) => [...SEG.segment(s)].reduce((n, x) => n + gw(x.segment), 0);
 export const clipCells = (s, max) => { let n = 0, o = ""; for (const x of SEG.segment(s)) { const w = gw(x.segment); if (n + w > max) break; n += w; o += x.segment; } return o; };
 const tailCells = (s, max) => { const g = [...SEG.segment(s)].map((x) => x.segment); let n = 0, o = ""; for (let i = g.length - 1; i >= 0; i--) { const w = gw(g[i]); if (n + w > max) break; n += w; o = g[i] + o; } return o; };
@@ -85,7 +85,7 @@ export function wrapText(text, width) {
   const w = Math.max(1, width), rows = [];
   for (const line of String(text).replace(/\t/g, "    ").split("\n")) {
     // a row drawn from the integration (\u0001 body / \u0002 banner) stays marked on every wrapped row, so its colour never breaks off
-    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0007]/.test(line) ? line[0] : "", mw = cells(mk) < w ? cells(mk) : 0;
+    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0008]/.test(line) ? line[0] : "", mw = cells(mk) < w ? cells(mk) : 0;
     let cur = "", n = 0;
     for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur && n > mw) { rows.push(cur); cur = mw ? mk : mk[0] || ""; n = mw; } cur += x.segment; n += g; }
     rows.push(cur);
@@ -260,7 +260,7 @@ export function foldedRender(ev) {
     // a short "[host] request …: done" note injected by the integration (never a typed user line): the host's, dim, never like the Doorman's words
     if (m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw)) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return "\n" + block("\u0005", ls.map((l, k) => (k ? l : `⚙ ${src} (the host, not the Doorman): ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 220); }
     const who = /^\[([^\]\n]{1,60})\]\s*/.exec(ls[0]), body = who ? [ls[0].slice(who[0].length), ...ls.slice(1)].filter(Boolean) : ls;
-    return `\n\u0007${who ? who[1] : "to the Doorman"}${at(m)}\n` + block("\u0004", body, 280);
+    return `\n\u0007${who ? `from ${who[1]}` : "to the Doorman"}${at(m)}\n` + block("\u0004", body, 280);
   }
   const calls = (m.content || []).filter((c) => c?.type === "toolCall"), out = [];
   for (const c of calls) {
@@ -268,7 +268,7 @@ export function foldedRender(ev) {
     const txt = typeof a.text === "string" ? a.text : typeof a.message === "string" ? a.message : "";
     if (!txt) continue; // reading files, looking things up: not shown
     const to = a.to ?? a.for ?? "";
-    out.push(`\n\u0007🚪 Doorman → ${clip(plain(String(Array.isArray(to) ? to.join(", ") : to)) || plain(String(c.name)).replace(/^[a-z0-9]+_/, ""), 60)}${at(m)}`, block("\u0004", meaningful(plain(txt)), 240));
+    out.push(`\n\u0008🚪 Doorman → ${clip(plain(String(Array.isArray(to) ? to.join(", ") : to)) || plain(String(c.name)).replace(/^[a-z0-9]+_/, ""), 60)}${at(m)}`, block("\u0004", meaningful(plain(txt)), 240));
   }
   const t = plain(textOf(m)).trim();
   if (t && !out.length) out.push("\n" + block("\u0005", ["🚪 Doorman: " + meaningful(t).join(" ")], 150)); // its own words only when it sent nothing (else they repeat the reply)
@@ -350,7 +350,8 @@ async function view(name, write) {
   // one thread row -> terminal text (markers are ours; plain() keeps them out of every outside string)
   const styled = (r) => {
     const c = r[0], x = r.slice(1);
-    if (c === "\u0007") { const [a, b] = split5(x); return `  ${B(a.replace(/^(🚪 Doorman)/, (m) => FG(accent, m)))}${b ? D("  " + b) : ""}`; } // an entry's header: who · time
+    if (c === "\u0008") { const [a, b] = split5(x); return `  ${B(FG(accent, a))}${b ? D("  " + b) : ""}`; }   // the Doorman's own reply header (only from its tool calls)
+    if (c === "\u0007") { const [a, b] = split5(x); return `  ${B(a)}${b ? D("  " + b) : ""}`; }               // a message's header: "from <their label>" (never accent)
     if (c === "\u0004" || c === "\u0003") return `   ${x}`;                                                                    // its text
     if (c === "\u0005" || c === "\u0002") return D(`   ${x.trim()}`);                                                         // a quiet line: the host's notes, where things went
     if (c === "\u0006") { const [a, b] = split5(x); return `  ${chip(/^✗|^•/.test(a) ? "120;120;120" : accent, a)}${b ? D("  " + b) : ""}`; } // a decision
