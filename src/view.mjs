@@ -244,9 +244,8 @@ const MDX = (s) => s.replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/__([^_\n]+)__/
 export function meaningful(t) {
   return String(t ?? "").replace(/\[your host card[\s\S]*?\[end of host card\]\s*/g, "").split("\n")
     .map((l) => MDX(l.replace(/^[\s│|>]*(?:🐳[│ ]*)*/u, "").trim()))
-    // context an integration repeats from earlier exchanges (owner: just "asked: <their words>"; the answer is already in the thread as the reply)
-    .filter((l) => !/^(?:\d{1,2}:\d{2}(?:\s*UTC)?\s+)?you answered:/i.test(l))
-    .map((l) => l.replace(/^(?:\d{1,2}:\d{2}(?:\s*UTC)?\s+)?(?:they|the asker) asked:/i, "asked:"))
+    // context an integration repeats from earlier exchanges is not shown (owner: it repeats what is already in the thread)
+    .filter((l) => !/^(?:\d{1,2}:\d{2}(?:\s*UTC)?\s+)?(?:you answered|they asked|the asker asked):/i.test(l))
     .filter((l) => l && !/^\[[^\]]*\]$/.test(l) && !/^\[[^\]]*\]\s*\(.*\)?$/.test(l) && !/^\(.*\)$/.test(l) && !/^Reply \(optional\)/.test(l) && !/is waiting for your answer\. Reply once with/.test(l) && !/^Reply once with \w+\(/.test(l));
 }
 // folded: at most `max` characters of the text (whole lines first), the rest behind Tab

@@ -361,9 +361,9 @@ test("compact windows and decide-once guards exist", () => {
   assert.ok(/H < MIN_H\) \{ P\(/.test(src) && /compact\(\) \? 3 : 4/.test(src), "small windows: compact layout, and below 8 rows nothing is drawn or decided");
 });
 
-test("repeated context: 'asked:' with their words in full, no 'you answered' line, the sender from the message line", () => {
+test("repeated earlier exchanges are not shown; only the message itself, with its sender", () => {
   const txt = "[earlier between you and this same asker, from the relay's records; context only]\n│ 03:20 UTC they asked: \"is pypi.org allowed? code OKAPI-7\"\n│ 03:20 UTC you answered: \"Yes, pypi.org is listed.\"\n[end of earlier exchanges]\n\n[talk from box · id x]\n│ 🐳│ [ProbeA, in box] what did I ask you?";
   const r = foldedRender({ type: "message_end", message: { role: "custom", content: txt } });
-  assert.match(r, /\u0007from ProbeA, in box/); assert.match(r, /asked: "is pypi\.org allowed\? code OKAPI-7"/);
+  assert.match(r, /\u0007from ProbeA, in box/); assert.ok(!/OKAPI|asked:/.test(r), "earlier exchanges are not repeated");
   assert.ok(!/answered|UTC/.test(r)); assert.match(r, /what did I ask you\?/);
 });
