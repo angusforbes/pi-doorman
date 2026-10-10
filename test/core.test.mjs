@@ -249,3 +249,14 @@ test("a decided request stays readable: summary, record block, pinned rows; mark
   assert.equal(wrapText("\u0001┃ " + "z".repeat(25), 10).join("").replace(/\u0001┃ /g, ""), "z".repeat(25));
   assert.deepEqual(wrapText("plain " + "w".repeat(10), 8), ["plain ww", "wwwwwwww"]); // unmarked rows unchanged
 });
+
+import { callText } from "../src/view.mjs";
+test("replies, questions and tool results are shown in full, not cut at a few hundred characters", () => {
+  const long = "word ".repeat(400).trim();
+  const r = render({ type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", name: "reply", arguments: { to: "Alpha", text: long } }] } });
+  assert.ok(r.includes(long)); assert.match(r, /^🔧 reply\(\{"to":"Alpha"\}\)\n   text:\n/);
+  assert.ok(render({ type: "message_end", message: { role: "toolResult", content: [{ type: "text", text: long }] } }).includes(long));
+  assert.ok(render({ type: "message_end", message: { role: "user", content: [{ type: "text", text: long }] } }).includes(long));
+  assert.equal(callText({ name: "read", arguments: { path: "/x" } }), '🔧 read({"path":"/x"})');
+  assert.ok(callText({ name: "x", arguments: { text: "y".repeat(50000) } }).length <= 20000);
+});

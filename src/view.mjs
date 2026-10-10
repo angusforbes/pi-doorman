@@ -28,18 +28,26 @@ export function promptLine(typed) {
   return JSON.stringify({ type: "prompt", message, streamingBehavior: "followUp" }) + "\n";
 }
 
-// One RPC event -> a short display line (or null). Shared by the viewer and the status writer's idea of a Q and A.
+// Everything is shown in full (owner: a reply cut at 300 characters looked like a display bug); FULL only guards against a runaway entry.
+export const FULL = 20000;
+// A tool call: short arguments as JSON on the call line, long text arguments (a reply's text, a message) underneath in full.
+export function callText(c) {
+  const a = c?.arguments && typeof c.arguments === "object" ? c.arguments : {}, short = {}, long = [];
+  for (const [k, v] of Object.entries(a)) (typeof v === "string" && (v.length > 80 || v.includes("\n")) ? long.push([k, v]) : (short[k] = v));
+  return clip(`🔧 ${c?.name}(${Object.keys(short).length ? JSON.stringify(short) : ""})${long.map(([k, v]) => `\n   ${k}:\n${v}`).join("")}`, FULL);
+}
+// One RPC event -> a display entry (or null). Shared by the viewer and the status writer's idea of a Q and A.
 export function render(ev) {
   if (!ev || typeof ev !== "object") return null;
   if (ev.type === "agent_start") return "── turn ──";
   if (ev.type === "message_end" && ev.message) {
     const m = ev.message, t = plain(textOf(m)).trim();
-    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `❓ ${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), 1200)}` : null;
+    if (m.role !== "assistant" && m.role !== "toolResult") return t ? `❓ ${clip(t.replace(/\[your host card[\s\S]*?\[end of host card\]\s*/, "[card] "), FULL)}` : null;
     if (m.role === "assistant") {
-      const calls = (m.content || []).filter((c) => c?.type === "toolCall").map((c) => `🔧 ${c.name}(${clip(JSON.stringify(c.arguments ?? {}), 300)})`);
-      return [t && `💬 ${t}`, ...calls, m.stopReason === "error" && `⚠ ${clip(m.errorMessage, 200)}`].filter(Boolean).join("\n") || null;
+      const calls = (m.content || []).filter((c) => c?.type === "toolCall").map(callText);
+      return [t && `💬 ${t}`, ...calls, m.stopReason === "error" && `⚠ ${clip(m.errorMessage, 2000)}`].filter(Boolean).join("\n") || null;
     }
-    if (m.role === "toolResult") return `   ↳ ${clip(plain(textOf(m)), 300)}`;
+    if (m.role === "toolResult") return `   ↳ ${clip(plain(textOf(m)), FULL)}`;
   }
   return null;
 }
@@ -335,7 +343,7 @@ async function view(name, write) {
     }
     if (review?.suggest && !rv) { // a line the host integration recognises as a REQUEST for the sandbox ("Research: …"): trusted host input, not chat
       let sg = null; try { sg = review.suggest(buf.trim()); } catch (e) { sg = { ok: false, text: String(e?.message ?? e) }; }
-      if (sg) { const typed = buf.trim(); buf = ""; sb.add(hostRow(`request from you: ${clip(plain(typed), 300)}`), W()); paint(); Promise.resolve(sg).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); }); return; }
+      if (sg) { const typed = buf.trim(); buf = ""; sb.add(hostRow(`request from you: ${clip(plain(typed), 2000)}`), W()); paint(); Promise.resolve(sg).then((r) => { sb.add(hostRow(`${r?.ok ? "✓" : "✗"} ${String(r?.text ?? "").slice(0, 500)}`), W()); paint(); }, (e) => { sb.add(hostRow(`✗ ${String(e?.message ?? e).slice(0, 300)}`), W()); paint(); }); return; }
     }
     refresh(); // (it also re-reads the review: a request may have arrived an instant ago)
     const pl = promptLine(buf);   // computed AFTER the refresh: a transition clears the buffer, and a cached line must never be sent
@@ -343,7 +351,7 @@ async function view(name, write) {
     if (review && (rv || readCur()) && isBareChoice(buf)) { sb.add(hostRow("a request is waiting: read it, then type your choice; nothing was sent to the Doorman"), W()); buf = ""; return paint(); }
     if (lock && rv) { sb.add(hostRow(`not sent to the Doorman (${lock}); while a request is waiting, only 1 / 2 decide it here`), W()); buf = ""; return paint(); } // a held chat line would swallow the next bare choice
     if (lock) { out(`🔒 not sent (${lock}); your line is held, press Enter again when typing is on`); if (!buf.endsWith(" ")) buf += " "; return; }
-    try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); sb.live(); out(`🧑 you: ${clip(plain(buf), 300)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
+    try { const fd = fs.openSync(fifo, fs.constants.O_WRONLY | fs.constants.O_NONBLOCK); fs.writeSync(fd, pl); fs.closeSync(fd); sb.live(); out(`🧑 you: ${clip(plain(buf), 2000)}`); buf = ""; sentAt = Date.now(); seenWorking = false; refresh(); }
     catch (e) { out(`🔒 not sent: the Doorman's input isn't open (${e.code || e.message}); line held`); }
   };
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
