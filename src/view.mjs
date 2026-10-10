@@ -244,6 +244,9 @@ const MDX = (s) => s.replace(/\*\*([^*\n]+)\*\*/g, "$1").replace(/__([^_\n]+)__/
 export function meaningful(t) {
   return String(t ?? "").replace(/\[your host card[\s\S]*?\[end of host card\]\s*/g, "").split("\n")
     .map((l) => MDX(l.replace(/^[\s│|>]*(?:🐳[│ ]*)*/u, "").trim()))
+    // context an integration repeats from earlier exchanges (owner: just "asked: <their words>"; the answer is already in the thread as the reply)
+    .filter((l) => !/^(?:\d{1,2}:\d{2}(?:\s*UTC)?\s+)?you answered:/i.test(l))
+    .map((l) => l.replace(/^(?:\d{1,2}:\d{2}(?:\s*UTC)?\s+)?(?:they|the asker) asked:/i, "asked:"))
     .filter((l) => l && !/^\[[^\]]*\]$/.test(l) && !/^\[[^\]]*\]\s*\(.*\)?$/.test(l) && !/^\(.*\)$/.test(l) && !/^Reply \(optional\)/.test(l) && !/is waiting for your answer\. Reply once with/.test(l) && !/^Reply once with \w+\(/.test(l));
 }
 // folded: at most `max` characters of the text (whole lines first), the rest behind Tab
@@ -259,8 +262,11 @@ export function foldedRender(ev) {
     if (!ls.length) return null;
     // a short "[host] request …: done" note injected by the integration (never a typed user line): the host's, dim, never like the Doorman's words
     if (m.role === "custom" && /^\s*\[[A-Za-z0-9_-]{1,20}\]\s/.test(raw)) { const src = (/^\s*\[([A-Za-z0-9_-]{1,20})\]/.exec(raw) || [, "host"])[1]; return "\n" + block("\u0005", ls.map((l, k) => (k ? l : `⚙ ${src} (the host, not the Doorman): ${l.replace(/^\[[^\]]*\]\s*/, "")}`)), 220); }
-    const who = /^\[([^\]\n]{1,60})\]\s*/.exec(ls[0]), body = who ? [ls[0].slice(who[0].length), ...ls.slice(1)].filter(Boolean) : ls;
-    return `\n\u0007${who ? `from ${who[1]}` : "to the Doorman"}${at(m)}\n` + block("\u0004", body, 280);
+    // the sender is the "[Name, …]" line wherever it sits (after any repeated context); that line is the message itself
+    const wi = ls.findIndex((l) => /^\[([^\]\n]{1,60})\]\s*\S/.test(l)), who = wi >= 0 ? /^\[([^\]\n]{1,60})\]\s*/.exec(ls[wi]) : null;
+    const body = who ? [...ls.slice(0, wi), ls[wi].slice(who[0].length), ...ls.slice(wi + 1)].filter(Boolean) : ls;
+    const asked = body.filter((l) => /^asked:/.test(l)), rest = body.filter((l) => !/^asked:/.test(l));
+    return `\n\u0007${who ? `from ${who[1]}` : "to the Doorman"}${at(m)}\n` + (asked.length ? asked.map((l) => "\u0004" + l).join("\n") + (rest.length ? "\n" : "") : "") + (rest.length ? block("\u0004", rest, 280) : "");
   }
   const calls = (m.content || []).filter((c) => c?.type === "toolCall"), out = [];
   for (const c of calls) {
