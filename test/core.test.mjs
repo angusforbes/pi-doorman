@@ -259,4 +259,6 @@ test("replies, questions and tool results are shown in full, not cut at a few hu
   assert.ok(render({ type: "message_end", message: { role: "user", content: [{ type: "text", text: long }] } }).includes(long));
   assert.equal(callText({ name: "read", arguments: { path: "/x" } }), '🔧 read({"path":"/x"})');
   assert.ok(callText({ name: "x", arguments: { text: "y".repeat(50000) } }).length <= 20000);
+  assert.equal(callText({ name: "x", arguments: [1, 2] }), "🔧 x([1,2])"); assert.equal(callText({ name: "x", arguments: "s" }), '🔧 x("s")');
+  assert.match(callText({ name: "x", arguments: JSON.parse('{"__proto__":{"v":"visible"},"n":"ok"}') }), /visible/);
 });

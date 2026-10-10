@@ -32,7 +32,9 @@ export function promptLine(typed) {
 export const FULL = 20000;
 // A tool call: short arguments as JSON on the call line, long text arguments (a reply's text, a message) underneath in full.
 export function callText(c) {
-  const a = c?.arguments && typeof c.arguments === "object" ? c.arguments : {}, short = {}, long = [];
+  const raw = c?.arguments ?? {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return clip(`🔧 ${c?.name}(${JSON.stringify(raw)})`, FULL); // not an object: as it is
+  const a = raw, short = Object.create(null), long = []; // (null prototype: an argument named __proto__ is kept)
   for (const [k, v] of Object.entries(a)) (typeof v === "string" && (v.length > 80 || v.includes("\n")) ? long.push([k, v]) : (short[k] = v));
   return clip(`🔧 ${c?.name}(${Object.keys(short).length ? JSON.stringify(short) : ""})${long.map(([k, v]) => `\n   ${k}:\n${v}`).join("")}`, FULL);
 }
