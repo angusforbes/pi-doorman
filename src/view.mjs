@@ -124,9 +124,21 @@ export const statusText = (offset, unseen) => (offset > 0 ? `↑ scrolled · End
 // those control characters from every sandbox / model string, so nothing the Doorman or a sandbox says can be drawn as a request.
 export const REVIEW_EARLY_MS = 2000, REVIEW_STALE_MS = 10000;
 export const isBareChoice = (line) => /^[123e][.)]?$/i.test(String(line ?? "").trim());
+// "r <note>": send the held item back to whoever wrote it, with the owner's note (it is withdrawn, not approved; a revision comes back as a new item).
+// "2 <reason>": deny, and the asker is told the reason. A note or reason is the owner's own text going to the sandbox: control characters out,
+// whitespace collapsed, at most NOTE_MAX characters (a longer one is refused, never cut).
+export const NOTE_MAX = 500;
+export const cleanNote = (s) => plain(String(s ?? "")).replace(/\s+/g, " ").trim();
+export function choiceLine(line) {
+  const t = String(line ?? "").trim();
+  if (isBareChoice(t)) return { k: t[0].toLowerCase(), note: "" };
+  if (/^r[.):]?$/i.test(t)) return { k: "r", note: "" };
+  const m = /^([2r])[.):]?\s+(\S[\s\S]*)$/i.exec(t);
+  return m ? { k: m[1].toLowerCase(), note: cleanNote(m[2]) } : null;
+}
 export function reviewBlock(rv, width) {
   const w = Math.max(10, width), rows = wrapText(plain(rv.text).replace(/\r/g, ""), w - 3).map((r) => `\u0001┃ ${r}`);
-  const offer = rv.choices.map((c) => (c === "1" ? (rv.edit ? "1 approve YOUR EDITED version" : "1 approve") : c === "2" ? "2 deny" : c === "e" ? (rv.edit ? "e edit again" : "e edit, then approve") : "3 allow similar (1 h)")).join(" · ");
+  const offer = rv.choices.map((c) => (c === "1" ? (rv.edit ? "1 approve YOUR EDITED version" : "1 approve") : c === "2" ? (rv.reason ? "2 deny (or 2 <reason>: the asker is told why)" : "2 deny") : c === "e" ? (rv.edit ? "e edit again" : "e edit, then approve") : c === "r" ? "r <note> send it back to its author to revise" : "3 allow similar (1 h)")).join(" · ");
   return [`\u0002 HELD FOR YOU · ${plain(rv.id)} · from the host's own record`, ...rows, `\u0002 type ${offer}: decided on the host, never by the Doorman`].join("\n");
 }
 // Shown after the owner edited an item: the original and the edited version side by side in the conversation (both stay in the archive).
@@ -143,31 +155,35 @@ export function requestSummary(text) {
   const body = (cut < 0 ? rest : rest.slice(0, cut)).filter(Boolean);
   return { kind, from, body };
 }
-export const VERBS = { "1": "APPROVED", "2": "DENIED", "3": "ALLOWED SIMILAR (1 h)", "1e": "APPROVED (EDITED BY YOU)" };
+export const VERBS = { "1": "APPROVED", "2": "DENIED", "3": "ALLOWED SIMILAR (1 h)", "1e": "APPROVED (EDITED BY YOU)", "r": "SENT BACK WITH YOUR NOTE" };
 const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 // The record that goes into the conversation once a decision is made: what it was, so it stays readable after the long request scrolls away.
 export function decisionBlock(d, width, maxBody = 6) {
   const w = Math.max(10, width), s = d.sum, more = s.body.length > maxBody;
-  const rows = [s.kind + (s.from ? ` · ${s.from}` : ""), ...s.body.slice(0, maxBody).map((l) => clip(l, 400)), ...(more ? [`… ${s.body.length - maxBody} more lines (the full request is above: PgUp / Home)`] : [])];
+  const rows = [...(d.note ? [`${d.verb === "DENIED" ? "your reason" : "your note"}: ${d.note}`] : []), s.kind + (s.from ? ` · ${s.from}` : ""), ...s.body.slice(0, maxBody).map((l) => clip(l, 400)), ...(more ? [`… ${s.body.length - maxBody} more lines (the full request is above: PgUp / Home)`] : [])];
   return [`\u0002 ${d.ok === false ? "✗ NOT DECIDED" : d.verb} · ${plain(d.id)} · ${hhmm(d.at)}${d.via ? ` · ${d.via}` : ""} · what it was:`, ...rows.flatMap((r) => wrapText(plain(r), w - 3).map((x) => `\u0001┃ ${x}`))].join("\n");
 }
 // The two pinned rows under the conversation while nothing is waiting: the last decision and where that request is now.
 export function decidedRows(d) {
   if (!d) return [];
-  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
+  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : d.verb === VERBS.r ? "↩" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
   return [head, `${d.done ? "📍 now:" : "⏳ now:"} ${d.track || (d.ok === false ? d.result : "waiting for the host to act on it…")}`];
 }
 
 // What a typed line does while a review item may be showing. rv = the item on screen ({id, choices, shownAt}), cur = the integration's
 // current item now (or null), gone = { id, at } of the item that just went away. -> { kind: "chat" } | { kind: "refuse", note } | { kind: "decide", id, choice }
 export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
-  if (!isBareChoice(line)) return { kind: "ignore" };
-  const k = String(line).trim()[0].toLowerCase();
+  const cl = choiceLine(line);
+  if (!cl) return { kind: "ignore" };
+  const k = cl.k, note = cl.note;
   if (!rv && cur) return { kind: "refuse", note: "a request just arrived: read it, then type your choice" }; // never a number typed before it was on screen
   if (rv && cur && cur.id === rv.id) {
     if (now - rv.shownAt < REVIEW_EARLY_MS) return { kind: "refuse", note: `that request appeared less than ${REVIEW_EARLY_MS / 1000} s ago: read it, then type your choice again` };
     if (!rv.choices.includes(k)) return { kind: "refuse", note: `${k} isn't offered for this request (${rv.choices.join(", ")})` };
-    return { kind: "decide", id: rv.id, choice: k };
+    if (k === "r" && !note) return { kind: "refuse", note: "type r followed by your note, e.g. r use plainer words; nothing was sent" };
+    if (note && k === "2" && !rv.reason) return { kind: "refuse", note: "this request can't carry a reason: type 2 alone to deny it" };
+    if (note.length > NOTE_MAX) return { kind: "refuse", note: `your ${k === "r" ? "note" : "reason"} is ${note.length} characters; at most ${NOTE_MAX}. Nothing was sent` };
+    return note ? { kind: "decide", id: rv.id, choice: k, note } : { kind: "decide", id: rv.id, choice: k };
   }
   if (rv && cur) return { kind: "refuse", note: "a different request is now waiting: read it first, then type your choice" };
   if (rv && !cur) return { kind: "refuse", note: `request ${plain(rv.id)} is no longer waiting (decided elsewhere or expired); nothing was sent` };
@@ -223,7 +239,7 @@ async function view(name, write) {
   const sb = new Scrollback();
   let review = null, rv = null, gone = null, decidedId = "";   // the review hook (optional)
   if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
-  const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, choices: c.choices.filter((x) => ["1", "2", "3", "e"].includes(x)) } : null; } catch { return null; } };
+  const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, choices: c.choices.filter((x) => ["1", "2", "3", "e", "r"].includes(x)), reason: c.reason === true } : null; } catch { return null; } };
   const hostRow = (t) => `\u0002 ${plain(t)}`;
   const bar = (txt) => { const w = W(); let t = clipCells(` ${txt}`, w); t += " ".repeat(Math.max(0, w - cells(t))); return `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${t}\x1b[0m`; };
   const prompt = () => { const pre = rv ? "REVIEW · decide> " : "decide> "; return pre + tailCells(plain(buf), Math.max(4, W() - 1 - cells(pre))); };
@@ -271,7 +287,7 @@ async function view(name, write) {
     if (t.state === "gone" && now - decided.at < 60e3) t = { state: "pending", done: false, text: decided.verb === "DECIDED ELSEWHERE" ? "checking what happened to it…" : "the host is acting on it…" };
     else if (t.state === "gone" && decided.verb === "DECIDED ELSEWHERE") decided.verb = "NO LONGER WAITING"; // expired or withdrawn: not a decision
     const text = plain(t.text).replace(/\s+/g, " ").trim().slice(0, 400);
-    if (decided.verb === "DECIDED ELSEWHERE" && (t.state === "approved" || t.state === "denied")) { decided.verb = t.state === "approved" ? "APPROVED" : "DENIED"; decided.via = "decided elsewhere"; }
+    if (decided.verb === "DECIDED ELSEWHERE" && (t.state === "approved" || t.state === "denied" || t.state === "returned")) { decided.verb = t.state === "approved" ? "APPROVED" : t.state === "returned" ? VERBS.r : "DENIED"; decided.via = "decided elsewhere"; }
     if (text && text !== decided.track) { decided.track = text; sb.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W()); }
     if (t.done) decided.done = true;
     paint();
@@ -294,7 +310,7 @@ async function view(name, write) {
   process.on("exit", () => { try { mouse(false); } catch { /* */ } }); process.on("uncaughtException", (e) => { try { mouse(false); P("\x1b[?25h"); } catch { /* */ } console.error(e); process.exit(1); });
   P("\x1b[2J"); mouse(true);
   pump();
-  sb.add(write ? "This window is an archive of the Doorman's conversation and of what it held for you. The only thing you can type here is a decision (1 / 2 / e) for a held request. Nothing typed here reaches the Doorman, the sandbox or the relay except that decision." : "Archive, read-only. Nothing you do here reaches the Doorman.", W());
+  sb.add(write ? "This window is an archive of the Doorman's conversation and of what it held for you. The only thing you can type here is a decision for a held request (1 / 2 / e, 2 <reason>, or r <note> to send it back to its author). Nothing typed here reaches the Doorman, the sandbox or the relay except that decision." : "Archive, read-only. Nothing you do here reaches the Doorman.", W());
   started = true; refresh(); paint();
   setInterval(() => { pump(); refresh(); paint(); }, 500);
   process.stdout.on("resize", () => { sb.setWidth(W()); P("\x1b[2J"); paint(); });
@@ -307,15 +323,15 @@ async function view(name, write) {
     if (c.kind === "ignore") { sb.add(hostRow("nothing to decide; this window only takes decisions" + (rv ? ` (type ${rv.choices.join(" / ")} for the request above)` : "")), W()); buf = ""; return paint(); }
     if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
-    const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice}${edited !== undefined ? ", your edited version" : ""})…`), W());
-    const d = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), track: "", done: false }; trackAt = 0; paint();
+    const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice}${edited !== undefined ? ", your edited version" : ""}${note ? `, with your ${c.choice === "r" ? "note" : "reason"}` : ""})…`), W());
+    const d = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), track: "", done: false, note }; trackAt = 0; paint();
     const settle = (ok, text) => { // the record of what was decided stays in the conversation, and pinned under it
       if (!ok) { d.ok = false; d.result = `the host refused: ${text}`; }
       sb.add(decisionBlock(d, W()), W(), 400000);
       if (text || !ok) sb.add(hostRow(`${ok ? "✓" : "✗"} ${text || "no answer"}`), W());
       sb.live(); paint();
     };
-    Promise.resolve().then(() => review.decide(id, c.choice, edited)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
+    Promise.resolve().then(() => review.decide(id, c.choice, edited, note || undefined)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
   };
   const HINT_MARK = "# ----- pi-doorman: everything below this line is ignored -----";
   // "approve with modifications": the integration gives the editable text of the item (review.edit(id) -> { text }); the owner edits it in his own

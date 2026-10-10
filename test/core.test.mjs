@@ -278,3 +278,26 @@ test("window shows an integration's info line under the header (generic hook)", 
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
   assert.ok(/review\?\.info\?\.\(\)/.test(src) && /\bTOP\b/.test(src), "info hook and the shifted viewport exist");
 });
+
+import { choiceLine, cleanNote, NOTE_MAX, VERBS } from "../src/view.mjs";
+test("r <note> sends an item back and 2 <reason> denies with a reason; both cleaned, capped and under the 2 s rule", () => {
+  const now = 100000, cur = { id: "a--111111" }, rv = { id: "a--111111", choices: ["1", "2", "r"], reason: true, shownAt: now - 5000 };
+  assert.deepEqual(classifyLine("r use plainer words", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "use plainer words" });
+  assert.deepEqual(classifyLine("R: shorter, please", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "shorter, please" });
+  assert.equal(classifyLine("r", { rv, cur, now }).kind, "refuse");                                          // a note is required
+  assert.deepEqual(classifyLine("2 not on task", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2", note: "not on task" });
+  assert.deepEqual(classifyLine("2", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2" }); // plain deny still works
+  assert.equal(classifyLine("2 not on task", { rv: { ...rv, reason: false }, cur, now }).kind, "refuse");  // no reason for this kind
+  assert.equal(classifyLine("r note", { rv: { ...rv, choices: ["1", "2"] }, cur, now }).kind, "refuse");  // r not offered
+  assert.equal(classifyLine("r note", { rv: { ...rv, shownAt: now - 500 }, cur, now }).kind, "refuse");   // 2 s rule
+  assert.equal(classifyLine("r " + "x".repeat(NOTE_MAX + 1), { rv, cur, now }).kind, "refuse");            // too long: refused, not cut
+  assert.equal(classifyLine("1 and also", { rv, cur, now }).kind, "ignore");                                // only 2 and r take text
+  const evil = "r a\u001b]8;;http://x\u0007b\u0001c\u0002d\u202ee\nf\tg";
+  const c = classifyLine(evil, { rv, cur, now }); assert.equal(c.kind, "decide"); assert.doesNotMatch(c.note, /[\u0000-\u001f\u007f-\u009f\u202e]/); assert.match(c.note, /f g$/);
+  assert.equal(cleanNote("  a \n\n b  "), "a b"); assert.equal(choiceLine("hello"), null);
+  const blk = reviewBlock({ id: "a--111111", text: "message\nfrom w", choices: ["1", "2", "r"], reason: true }, 200);
+  assert.match(blk, /r <note> send it back/); assert.match(blk, /2 <reason>/);
+  const rec = decisionBlock({ id: "a--111111", verb: VERBS.r, at: now, sum: requestSummary("message\nfrom w → x\n\nhi"), note: "use plainer words" }, 80);
+  assert.match(rec, /SENT BACK WITH YOUR NOTE/); assert.match(rec, /your note: use plainer words/);
+  assert.match(decidedRows({ id: "a--111111", verb: VERBS.r, at: now, sum: requestSummary("message"), track: "", done: false })[0], /^↩ SENT BACK/);
+});
