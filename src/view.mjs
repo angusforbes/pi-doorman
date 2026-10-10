@@ -284,6 +284,8 @@ async function view(name, write) {
     if (now - decided.at > 30 * 60e3) { decided.done = true; decided.track = `${decided.track || "no news from the host"} (stopped following after 30 min)`; return paint(); }
     let t = null; try { t = review.track(decided.id); } catch { return; }
     if (!t || typeof t.text !== "string") return;
+    // "gone" right after a decision can just be the host between removing the item and logging what it did: give it a minute before believing it
+    if (t.state === "gone" && now - decided.at < 60e3) t = { state: "pending", done: false, text: "the host is acting on it…" };
     const text = plain(t.text).replace(/\s+/g, " ").trim().slice(0, 400);
     if (decided.verb === "DECIDED ELSEWHERE" && (t.state === "approved" || t.state === "denied")) { decided.verb = t.state === "approved" ? "APPROVED" : "DENIED"; decided.via = "decided elsewhere"; }
     if (text && text !== decided.track) { decided.track = text; sb.add(hostRow(`${t.done ? "📍" : "⏳"} ${decided.id}: ${text}`), W()); }
