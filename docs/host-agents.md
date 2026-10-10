@@ -26,8 +26,23 @@ An approved free-form request becomes a job with state `waiting`. A host agent, 
 - The bridge is host-side only (a local socket or a 0600 folder). The sandbox never gets it: a sandbox that could claim or report jobs would have a way around the wall.
 - Start the agent with only the tools and folders the job allows, for example Claude Code with `--allowedTools` and `--add-dir`. A throwaway sandbox or a separate user is stronger for anything that writes.
 
-## Claude Code, for example
+## Only the MCP config
 
-`claude mcp add doorman-bridge -- doorman-bridge mcp` with `DOORMAN_STATE` set to the Doorman's state folder and `DOORMAN_BRIDGE_AGENT` to a name for the agent, then in a session: "list the Doorman's jobs, claim the first and do it; ask me through the Doorman if unsure; report at the end."
+The MCP server describes itself, so a host agent needs no long first prompt:
+
+- When it connects, it sends the rules as MCP instructions: list, claim, show, do only what's approved, ask the owner when unsure, report.
+- With `DOORMAN_BRIDGE_AGENT` set, it registers the agent under that name on connect, keeps the registration alive, and removes it when the session closes.
+  - The harness is the client's own name, or `DOORMAN_BRIDGE_HARNESS`.
+  - `DOORMAN_BRIDGE_SCOPE` and `DOORMAN_BRIDGE_CAPS` are optional.
+- Its MCP prompt `check` does the next waiting job.
+- A skill with the same rules ships beside it (`skill/doorman-bridge/SKILL.md`), for clients that don't show MCP instructions.
+
+Claude Code, for example:
+
+```json
+{ "mcpServers": { "doorman-bridge": { "command": "doorman-bridge", "args": ["mcp"], "env": { "DOORMAN_BRIDGE_AGENT": "Doorman-Host", "DOORMAN_STATE": "/path/to/the/doorman/state" } } } }
+```
+
+`claude --strict-mcp-config --mcp-config bridge-mcp.json --restricted --tools Read,Write,Edit --add-dir <the folders jobs may use>`, then `/mcp__doorman-bridge__check` whenever you want the next job done.
 
 Without a host agent nothing here is needed; unsupported open-ended asks are simply declined.
