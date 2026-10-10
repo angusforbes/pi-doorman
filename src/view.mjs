@@ -265,7 +265,8 @@ export function foldedRender(ev) {
     const wi = ls.findIndex((l) => /^\[([^\]\n]{1,60})\]\s*\S/.test(l)), who = wi >= 0 ? /^\[([^\]\n]{1,60})\]\s*/.exec(ls[wi]) : null;
     const body = who ? [...ls.slice(0, wi), ls[wi].slice(who[0].length), ...ls.slice(wi + 1)].filter(Boolean) : ls;
     const asked = body.filter((l) => /^asked:/.test(l)), rest = body.filter((l) => !/^asked:/.test(l));
-    return `\n\u0007${who ? `from ${who[1]}` : "to the Doorman"}${at(m)}\n` + (asked.length ? asked.map((l) => "\u0004" + l).join("\n") + (rest.length ? "\n" : "") : "") + (rest.length ? block("\u0004", rest, 280) : "");
+    // the sender's label as given (owner: no "from"); a label that looks like the Doorman keeps "from", so it never reads as the Doorman's own reply
+    return `\n\u0007${who ? (/^\W*(?:🚪|doorman)/iu.test(who[1]) ? `from ${who[1]}` : who[1]) : "to the Doorman"}${at(m)}\n` + (asked.length ? asked.map((l) => "\u0004" + l).join("\n") + (rest.length ? "\n" : "") : "") + (rest.length ? block("\u0004", rest, 280) : "");
   }
   const calls = (m.content || []).filter((c) => c?.type === "toolCall"), out = [];
   for (const c of calls) {
