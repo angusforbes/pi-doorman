@@ -1,6 +1,6 @@
 # Host agents: Claude Code, Codex or Pi through the bridge
 
-Status: built in the host relay and under review; it lands in this package after the fixed request types. The fixed types need no agent. The bridge below is for open-ended jobs, once the owner approves one, and it is off unless the owner turns on host jobs. Until it ships here, the host-side commands below are not available; the quick start covers what works today.
+Status: built and being moved into this package; a real Claude Code session has worked a job through the MCP server end to end. The fixed types need no agent. The bridge below is for open-ended jobs, once the owner approves one, and it is off unless the owner turns on host jobs. Until it ships here, the host-side commands below are not available; the quick start covers what works today.
 
 ## The idea
 
