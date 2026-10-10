@@ -138,6 +138,7 @@ export function reviewBlock(rv, width) {
 export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
   if (!isBareChoice(line)) return { kind: "chat" };
   const k = String(line).trim()[0];
+  if (!rv && cur) return { kind: "refuse", note: "a request just arrived: read it, then type your choice" }; // never a number typed before it was on screen
   if (rv && cur && cur.id === rv.id) {
     if (now - rv.shownAt < REVIEW_EARLY_MS) return { kind: "refuse", note: `that request appeared less than ${REVIEW_EARLY_MS / 1000} s ago: read it, then type your choice again` };
     if (!rv.choices.includes(k)) return { kind: "refuse", note: `${k} isn't offered for this request (${rv.choices.join(", ")})` };
@@ -228,11 +229,13 @@ async function view(name, write) {
     }
     let l = !write || !unitOk ? lockReason({ write, unitActive: unitOk }) : status.state !== "idle" && status.state !== "working" ? "status unknown" : sentAt ? "answering you; wait for it" : lockReason({ write, unitActive: unitOk, state: status.state, lastQuestion: status.question });
     if (l !== lock) { const was = lock; lock = l; if (was && !l) out("🔓 typing is on again"); else paint(); }
-    if (review) { // the integration's own record of what is held for the owner
-      const cur = readCur();
-      if (cur && (!rv || rv.id !== cur.id)) { rv = { ...cur, shownAt: Date.now() }; bg = revBg; sb.live(); sb.add(reviewBlock(rv, W()), W(), 400000); paint(); }
-      else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; if (rv.id !== decidedId) sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); rv = null; bg = baseBg; paint(); }
-    }
+    pollReview();
+  };
+  const pollReview = () => { // the integration's own record of what is held for the owner; also run when a line is sent, so a request that appeared an instant ago is on screen (and counts as too early) before the line is classified
+    if (!review) return;
+    const cur = readCur();
+    if (cur && (!rv || rv.id !== cur.id)) { if (buf) { buf = ""; sb.add(hostRow("what you had typed was cleared: a request arrived; type your choice after reading it"), W()); } rv = { ...cur, shownAt: Date.now() }; bg = revBg; sb.live(); sb.add(reviewBlock(rv, W()), W(), 400000); paint(); }
+    else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; buf = ""; if (rv.id !== decidedId) sb.add(hostRow(`request ${rv.id} is no longer waiting (decided elsewhere or expired)`), W()); rv = null; bg = baseBg; paint(); }
   };
   // History: the tail of the events log (about 400 KB, from a whole line) is loaded at start, then followed.
   let pos = 0;
@@ -258,6 +261,7 @@ async function view(name, write) {
   process.stdout.on("resize", () => { sb.setWidth(W()); P("\x1b[2J"); paint(); });
   const send = () => {
     if (review) {
+      pollReview();
       const cur = readCur(), c = classifyLine(buf, { rv, cur, gone });
       if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
       if (c.kind === "decide") { // straight to the host's decision path; never to the Doorman, whatever its state

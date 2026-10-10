@@ -226,3 +226,6 @@ test("review hook: model or sandbox text can't be drawn as a request", () => {
   assert.match(blk, /1 approve · 2 deny · 3 allow similar/);
   assert.equal(cells("\u0001┃ ab"), 4);
 });
+test("review hook: a request that appeared an instant ago can't take a bare number as chat (race)", () => {
+  assert.equal(classifyLine("1", { rv: null, cur: { id: "n--000001" }, now: 5000 }).kind, "refuse");
+});
