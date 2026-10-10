@@ -47,6 +47,6 @@
   },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "test:pty": "python3 test/pty/answer-paste.py"
+    "test:pty": "python3 test/pty/answer-paste.py && python3 test/pty/keys.py"
   }
 }

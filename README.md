@@ -36,16 +36,26 @@ Without a model key the service runs rules-only: `ask` is answered from the card
 
 ## The window: an archive and a place to decide
 
-`pi-doorman view NAME [--write]` shows the Doorman's conversation (loaded from the event log, scrollable) and, with `--write`, takes decisions on what a host integration holds for the owner. There is no way to talk to the Doorman from it: nothing typed in the window reaches the Doorman model (the window has no input path to it at all), and with nothing held a typed line only gets a notice. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice, edited?, note?), edit?(id), track?(id) }`:
+`pi-doorman view NAME [--write]` shows the Doorman's conversation (loaded from the event log, scrollable) and, with `--write`, takes decisions on what a host integration holds for the owner. There is no way to talk to the Doorman from it: nothing typed in the window reaches the Doorman model (the window has no input path to it at all), and with nothing held a typed line only gets a notice. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, key, text?, { minutes }?), track?(id), info?() }`:
 
-- `current()` returns `null` or `{ id, text, choices, reason? }` (choices are "1", "2", "3", "e", "r"; `reason: true` when a deny can carry a reason): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input and status lines switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
-- A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent.
-- `e` (approve with modifications), when offered: the window opens `edit(id)`'s text in the owner's `$VISUAL` / `$EDITOR`, shows the original and the edited version, and after the same 2 second rule `1` calls `decide(id, "1", editedText)`. The integration must re-check the edit and keep both versions.
+- `current()` returns `null` or `{ id, text, title?, choices, answer? }`: the integration's own record of what is waiting for the owner. `choices` are some of "1", "1+" and "2"; `answer: true` marks a question someone asked the owner (then "1" needs text). The window draws it in full, with a panel at the bottom. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
+- The keys, typed while an item is showing, only after it has been on screen for 2 seconds and only if it is still the one waiting (otherwise a notice says why and nothing is sent):
+
+| Key           | What decide gets                       |
+| ------------- | -------------------------------------- |
+| 1             | decide(id, "1")                        |
+| 1 text        | decide(id, "1", text)                  |
+| 1+            | decide(id, "1+", "", { minutes: 60 })  |
+| 1+ 2h text    | decide(id, "1+", text, { minutes })    |
+| 2             | decide(id, "2")                        |
+| 2 text        | decide(id, "2", text)                  |
+
+- "1" approves, and its text is for the asker only. "1+" approves and allows similar ones for a while: minutes or hours after it (30m, 2h), at least 5 minutes, at most 8 hours (a longer one is cut to 8 hours). "2" denies: the integration sends the item back to whoever asked, with why it was held and the text. On an `answer` item, "1 text" is the answer and a bare "1" is refused; "2" declines.
+- The text is the owner's own words: the window refuses control or invisible formatting characters (typed or pasted) and anything over 500 characters. The integration must clean it again, label it as the owner's, and never send anything out because of it.
 - `info()` (optional) returns one line (for example the models, mode and level in effect) shown dimmed under the header.
-- `r <note>` (send it back), when offered: the item is withdrawn, not approved, and `decide(id, "r", undefined, note)` passes the owner's note on to whoever wrote the item, so they can revise it; the revision should come back as a new held item. `2 <reason>`, when `reason` is true, calls `decide(id, "2", undefined, reason)` so the asker learns why. The window cleans a note or reason (no control characters, whitespace collapsed) and refuses one over 500 characters; the integration must clean it again, label it as the owner's, and never send anything out because of it. Both obey the same 2 second rule.
-- `track(id)` (optional) follows a decided request to where it ended up: `{ state, text, done }`, state `pending` / `approved` / `denied` / `returned` / `gone`.
+- `track(id)` (optional) follows a decided request to where it ended up: `{ state, text, done }`, state `pending` / `approved` / `denied` / `gone`.
 
-The package ships no decision logic: `decide`, `edit` and `track` are the integration's.
+The package ships no decision logic: `decide` and `track` are the integration's.
 
 ## Security contract
 

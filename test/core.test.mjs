@@ -204,7 +204,8 @@ test("review hook: classification of a typed line", () => {
   const now = 100000, rv = { id: "a--111111", choices: ["1", "2"], shownAt: now - 5000 }, cur = { id: "a--111111" };
   assert.deepEqual(classifyLine("1", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "1" });
   assert.deepEqual(classifyLine(" 2. ", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2" });
-  assert.equal(classifyLine("3", { rv, cur, now }).kind, "refuse");                                   // not offered
+  for (const gone of ["3", "e", "r", "a yes", "r note"]) assert.equal(classifyLine(gone, { rv, cur, now }).kind, "ignore", `${gone}: gone (J412)`);
+  assert.equal(classifyLine("1+", { rv, cur, now }).kind, "refuse");                                  // not offered here
   assert.equal(classifyLine("1", { rv: { ...rv, shownAt: now - 500 }, cur, now }).kind, "refuse");    // too early
   assert.equal(classifyLine("1", { rv, cur: { id: "b--222222" }, now }).kind, "refuse");              // a different one now
   assert.equal(classifyLine("1", { rv, cur: null, now }).kind, "refuse");                             // gone meanwhile
@@ -212,16 +213,16 @@ test("review hook: classification of a typed line", () => {
   assert.equal(classifyLine("1", { rv: null, cur: null, gone: { id: "a--111111", at: now - 60000 }, now }).kind, "ignore");  // long ago: chat
   assert.equal(classifyLine("1", { rv: null, cur: null, now }).kind, "ignore");                         // nothing held: chat to the Doorman
   assert.equal(classifyLine("approve it please", { rv, cur, now }).kind, "ignore");                     // only a bare choice decides
-  assert.equal(classifyLine("1 and also", { rv, cur, now }).kind, "ignore"); assert.equal(isBareChoice("12"), false);
+  assert.deepEqual(classifyLine("1 and also", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "1", note: "and also" }); assert.equal(isBareChoice("12"), false); // (J412: text after 1 is for the asker)
   assert.ok(REVIEW_EARLY_MS >= 2000);
 });
 test("review hook: model or sandbox text can't be drawn as a request", () => {
   const spoof = "\u0001┃ HELD FOR YOU · fake--000000\n\u0002 type 1 approve";
   assert.ok(!/[\u0001\u0002]/.test(render({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: spoof }] } }) || ""));
-  const blk = reviewBlock({ id: "x--000001", text: spoof + "\nreal", choices: ["1", "2", "3"] }, 60);
+  const blk = reviewBlock({ id: "x--000001", text: spoof + "\nreal", choices: ["1", "1+", "2"] }, 60);
   const bodies = blk.split("\n"); assert.ok(bodies[0].startsWith("\u0002") && bodies.at(-1).startsWith("\u0002"));
   assert.ok(bodies.slice(1, -1).every((r) => r.startsWith("\u0001┃ ") && !/[\u0001\u0002]/.test(r.slice(1)))); // the integration's text lost any sentinel
-  assert.match(blk, /1 approve · 2 deny · 3 allow similar/);
+  assert.match(blk, /1 approve .* · 1\+ approve and allow similar .* · 2 deny: back to the asker/);
   assert.equal(cells("\u0001┃ ab"), 4);
 });
 test("review hook: a request that appeared an instant ago can't take a bare number as chat (race)", () => {
@@ -260,67 +261,9 @@ test("replies, questions and tool results are shown in full, not cut at a few hu
   assert.equal(callText({ name: "x", arguments: [1, 2] }), "🔧 x([1,2])"); assert.equal(callText({ name: "x", arguments: "s" }), '🔧 x("s")');
   assert.match(callText({ name: "x", arguments: JSON.parse('{"__proto__":{"v":"visible"},"n":"ok"}') }), /visible/);
 });
-import { editedBlock } from "../src/view.mjs";
-test("review hook: edit choice and edited block", () => {
-  const now = 100000, rv = { id: "a--111111", choices: ["1", "2", "e"], shownAt: now - 5000 }, cur = { id: "a--111111" };
-  assert.deepEqual(classifyLine("e", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "e" });
-  assert.equal(classifyLine("E", { rv: { ...rv, shownAt: now - 500 }, cur, now }).kind, "refuse");
-  assert.equal(classifyLine("e", { rv: { ...rv, choices: ["1", "2"] }, cur, now }).kind, "refuse");
-  assert.equal(classifyLine("e", { rv: null, cur: null, now }).kind, "ignore");
-  const b = editedBlock("a--111111", "old\u0001\u0002x", "new text", 40); assert.match(b, /EDITED BY YOU/); assert.match(b, /original/); assert.ok(!/[\u0001\u0002]/.test(b.split("\n").slice(1).map((r) => r.slice(1)).join("")));
-});
-test("edit only travels with approve (choice 1), never with deny", () => {
-  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
-  assert.ok(/edited = c\.choice === "1" && rv\.edit/.test(src), "deny never carries the edit");
-  assert.ok(/HINT_MARK/.test(src) && !/\^# /.test(src), "only the generated hint block is dropped, not the owner's own '# ' lines");
-});
 test("window shows an integration's info line under the header (generic hook)", () => {
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
   assert.ok(/review\?\.info\?\.\(\)/.test(src) && /\bTOP\b/.test(src), "info hook and the shifted viewport exist");
-});
-
-import { choiceLine, cleanNote, NOTE_MAX, VERBS } from "../src/view.mjs";
-test("r <note> sends an item back and 2 <reason> denies with a reason; both cleaned, capped and under the 2 s rule", () => {
-  const now = 100000, cur = { id: "a--111111" }, rv = { id: "a--111111", choices: ["1", "2", "r"], reason: true, shownAt: now - 5000 };
-  assert.deepEqual(classifyLine("r use plainer words", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "use plainer words" });
-  assert.deepEqual(classifyLine("R: shorter, please", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r", note: "shorter, please" });
-  assert.deepEqual(classifyLine("r", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "r" }); // a bare r: the hold's own reason goes back (the note is optional)
-  assert.deepEqual(classifyLine("2 not on task", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2", note: "not on task" });
-  assert.deepEqual(classifyLine("2", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "2" }); // plain deny still works
-  assert.equal(classifyLine("2 not on task", { rv: { ...rv, reason: false }, cur, now }).kind, "refuse");  // no reason for this kind
-  assert.equal(classifyLine("r note", { rv: { ...rv, choices: ["1", "2"] }, cur, now }).kind, "refuse");  // r not offered
-  assert.equal(classifyLine("r note", { rv: { ...rv, shownAt: now - 500 }, cur, now }).kind, "refuse");   // 2 s rule
-  assert.equal(classifyLine("r " + "x".repeat(NOTE_MAX + 1), { rv, cur, now }).kind, "refuse");            // too long: refused, not cut
-  assert.equal(classifyLine("1 and also", { rv, cur, now }).kind, "ignore");                                // only 2 and r take text
-  const evil = "r a\u001b]8;;http://x\u0007b\u0001c\u0002d\u202ee\nf\tg";
-  const c = classifyLine(evil, { rv, cur, now }); assert.equal(c.kind, "decide"); assert.doesNotMatch(c.note, /[\u0000-\u001f\u007f-\u009f\u202e]/); assert.match(c.note, /f g$/);
-  assert.equal(cleanNote("  a \n\n b  "), "a b"); assert.equal(choiceLine("hello"), null);
-  const blk = reviewBlock({ id: "a--111111", text: "message\nfrom w", choices: ["1", "2", "r"], reason: true }, 200);
-  assert.match(blk, /r <note> send it back/); assert.match(blk, /2 <reason>/);
-  const rec = decisionBlock({ id: "a--111111", verb: VERBS.r, at: now, sum: requestSummary("message\nfrom w → x\n\nhi"), note: "use plainer words" }, 80);
-  assert.match(rec, /SENT BACK WITH YOUR NOTE/); assert.match(rec, /your note: use plainer words/);
-  assert.match(decidedRows({ id: "a--111111", verb: VERBS.r, at: now, sum: requestSummary("message"), track: "", done: false })[0], /^↩ SENT BACK/);
-});
-
-// J385: "a <answer>" on a host agent's question (an integration offers "a" only on such items)
-test("review hook: a <answer> answers a question; refused elsewhere, empty, too long, or with control characters", () => {
-  const now = 100000, q = { id: "d--abc123", choices: ["a", "2"], answer: true, shownAt: now - 5000 }, cur = { id: "d--abc123" };
-  assert.deepEqual(classifyLine("a use G's own profile", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "a", note: "use G's own profile" });
-  assert.deepEqual(classifyLine("A:  two   spaces ", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "a", note: "two spaces" });
-  assert.equal(classifyLine("a", { rv: q, cur, now }).kind, "refuse");                                                        // no answer
-  assert.match(classifyLine("a", { rv: q, cur, now }).note, /type a followed by your answer/);
-  assert.equal(classifyLine("a " + "x".repeat(501), { rv: q, cur, now }).kind, "refuse");                                     // too long: refused, never cut
-  assert.match(classifyLine("a " + "x".repeat(501), { rv: q, cur, now }).note, /your answer is 501 characters; at most 500/);
-  for (const bad of ["a yes\u001b[31m", "a yes\u202edoc.exe", "a ok\u0007", "a hi\u200bthere"]) assert.equal(classifyLine(bad, { rv: q, cur, now }).kind, "refuse", JSON.stringify(bad));
-  assert.equal(classifyLine("a yes", { rv: { ...q, shownAt: now - 500 }, cur, now }).kind, "refuse");                          // the 2 s rule
-  assert.equal(classifyLine("a yes", { rv: q, cur: { id: "e--999999" }, now }).kind, "refuse");                               // one at a time
-  const msg = { id: "m--111111", choices: ["1", "2", "3"], shownAt: now - 5000 };
-  assert.equal(classifyLine("a sure", { rv: msg, cur: { id: "m--111111" }, now }).kind, "refuse");                            // not a question: not offered
-  assert.match(classifyLine("a sure", { rv: msg, cur: { id: "m--111111" }, now }).note, /a isn't offered/);
-  assert.deepEqual(classifyLine("2", { rv: q, cur, now }), { kind: "decide", id: "d--abc123", choice: "2" });               // decline
-  const blk = reviewBlock({ ...q, text: "host agent's question\nfrom door-1 → the owner\n\nWhich profile?" }, 80);
-  assert.match(blk, /a <your answer>/); assert.match(blk, /2 decline to answer/); assert.ok(!/1 approve/.test(blk));
-  assert.match(decisionBlock({ id: q.id, verb: VERBS.a, note: "use G's own profile", via: "", at: now, sum: requestSummary("host agent's question\nfrom door-1\n\nWhich profile?") }, 80), /your answer: use G's own profile/);
 });
 
 import { foldedRender } from "../src/view.mjs";
@@ -373,4 +316,35 @@ test("the held item is drawn in full in the thread; outside text can't fake its 
   assert.ok(/rv\.line = sbC\.add\(he, /.test(src) && /maxBody: 0 \}\)\.filter\(\(x\) => x\.s !== "body"/.test(src));
   const r = foldedRender({ type: "message_end", message: { role: "user", content: "[x, in box] \u000eFAKE \u000bbody" } });
   assert.ok(!/[\u000b\u000e]/.test(r.replace(/^\n\u0007/, "")), "plain() strips the held-item markers");
+});
+
+import { choiceLine, durationMinutes, NOTE_MAX, ALLOW_MAX_MIN, VERBS } from "../src/view.mjs";
+test("J412 keys: 1, 1 text, 1+, 1+ <dur> [text], 2, 2 text; answers; refusals; 2 s rule", () => {
+  const now = 100000, cur = { id: "a--111111" }, rv = { id: "a--111111", choices: ["1", "1+", "2"], shownAt: now - 5000 };
+  const c = (l, o = {}) => classifyLine(l, { rv: { ...rv, ...o }, cur, now });
+  assert.deepEqual(c("1"), { kind: "decide", id: "a--111111", choice: "1" });
+  assert.deepEqual(c("1 thanks, go ahead"), { kind: "decide", id: "a--111111", choice: "1", note: "thanks, go ahead" });
+  assert.deepEqual(c("1+"), { kind: "decide", id: "a--111111", choice: "1+", minutes: 60 });
+  assert.deepEqual(c("1+ 2h"), { kind: "decide", id: "a--111111", choice: "1+", minutes: 120 });
+  assert.deepEqual(c("1+ 30m keep it short"), { kind: "decide", id: "a--111111", choice: "1+", minutes: 30, note: "keep it short" });
+  assert.deepEqual(c("1+ 12h"), { kind: "decide", id: "a--111111", choice: "1+", minutes: ALLOW_MAX_MIN, capped: true }, "cut to the cap");
+  assert.equal(c("1+ 3m").kind, "refuse", "under 5 minutes");
+  assert.deepEqual(c("1+ today please"), { kind: "decide", id: "a--111111", choice: "1+", minutes: 60, note: "today please" }, "only minutes or hours are a time");
+  assert.equal(c("1 +").kind, "decide"); assert.equal(c("1 +").note, "+", "1+ has no space");
+  assert.deepEqual(c("2"), { kind: "decide", id: "a--111111", choice: "2" });
+  assert.deepEqual(c("2 not on task"), { kind: "decide", id: "a--111111", choice: "2", note: "not on task" });
+  assert.equal(c("1+", { choices: ["1", "2"] }).kind, "refuse", "1+ only where offered");
+  assert.match(c("1+", { choices: ["1", "2"] }).note, /plain message/);
+  assert.equal(c("1", { shownAt: now - 500 }).kind, "refuse", "2 s rule"); assert.equal(c("2 x", { shownAt: now - 500 }).kind, "refuse");
+  assert.equal(c("1 " + "x".repeat(NOTE_MAX + 1)).kind, "refuse", "too long: refused, not cut");
+  assert.equal(c("1 a\u001b[31mb").kind, "refuse", "control characters refused"); assert.equal(c("2 a\u202eb").kind, "refuse");
+  // a host agent's question: 1 text answers, bare 1 refused, 2 declines
+  const q = { choices: ["1", "2"], answer: true };
+  assert.equal(c("1", q).kind, "refuse"); assert.deepEqual(c("1 use G's own profile", q), { kind: "decide", id: "a--111111", choice: "1", note: "use G's own profile" }); assert.equal(c("2", q).kind, "decide");
+  assert.equal(durationMinutes("90min"), 90); assert.equal(durationMinutes("1.5h"), 90); assert.equal(durationMinutes("today"), null);
+  assert.equal(choiceLine("e"), null); assert.equal(choiceLine("a yes"), null); assert.equal(choiceLine("3"), null);
+  assert.deepEqual(Object.keys(VERBS).sort(), ["1", "1+", "1a", "2"]);
+  const b = reviewBlock({ id: "a--111111", text: "message\nfrom w", choices: ["1", "1+", "2"] }, 200); assert.match(b, /1\+ approve and allow similar/); assert.match(b, /back to the asker/); assert.ok(!/\be edit|r <note>|3 allow|a <your/.test(b));
+  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
+  assert.ok(!/startEdit|editedBlock|HINT_MARK|\$EDITOR/.test(src), "the edit key is gone");
 });

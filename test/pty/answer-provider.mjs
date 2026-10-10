@@ -2,9 +2,9 @@
 import fs from "node:fs";
 export default function createReview() {
   return {
-    current() { return { id: "door--abc123", text: "host agent question", choices: ["a", "2"], answer: true }; },
-    decide(id, k, edited, note) {
-      fs.appendFileSync(process.env.REVIEW_CAPTURE, JSON.stringify({ id, k, note }) + "\n");
+    current() { return { id: "door--abc123", text: "host agent question", choices: (process.env.REVIEW_CHOICES || "1,2").split(","), answer: process.env.REVIEW_ANSWER !== "0" }; },
+    decide(id, k, note, opts = {}) { // (J412: decide(id, key, text, { minutes }))
+      fs.appendFileSync(process.env.REVIEW_CAPTURE, JSON.stringify({ id, k, note, ...(opts.minutes ? { minutes: opts.minutes } : {}) }) + "\n");
       return { ok: true, text: "captured in temp fixture" };
     },
   };

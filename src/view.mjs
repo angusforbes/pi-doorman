@@ -10,7 +10,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
-import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 export const stateDir = (name) => path.join(process.env.PI_DOORMAN_STATE || path.join(process.env.XDG_STATE_HOME || path.join(os.homedir(), ".local", "state"), "pi-doorman", "view"), name);
@@ -121,35 +120,36 @@ export class Scrollback {
 export const statusText = (offset, unseen) => (offset > 0 ? `↑ scrolled · End for live${unseen ? ` · ${unseen} new` : ""} · PgUp/PgDn, wheel, Home` : "wheel / PgUp / PgDn / Shift+arrows scroll · End = live");
 
 // ---- the review hook (generic): a host integration may show ONE held request at a time, from its own trusted record, and take a
-// bare choice (1 / 2 / 3) typed in this window. The window never decides anything itself; the integration's decide() does, and the
-// choice never goes to the Doorman model. Rows drawn from the integration start with \u0001 (body) or \u0002 (banner): plain() strips
-// those control characters from every sandbox / model string, so nothing the Doorman or a sandbox says can be drawn as a request.
+// choice typed in this window. The window never decides anything itself; the integration's decide() does, and the choice never goes to
+// the Doorman model. Rows drawn from the integration start with \u0001 (body) or \u0002 (banner): plain() strips those control characters
+// from every sandbox / model string, so nothing the Doorman or a sandbox says can be drawn as a request.
+// The keys: "1" approve · "1 text" approve, and the asker is told the text · "1+" approve and allow similar for 1 h · "1+ 2h [text]" the
+// same for 2 h (minutes or hours, at least ALLOW_MIN_MIN, at most ALLOW_MAX_MIN: a longer one is cut to it) · "2" deny: back to the asker
+// with why it was held · "2 text" the same, plus the text. On a question a host agent asked, "1 text" is the answer (a bare 1 is refused)
+// and 2 declines. The text is the owner's own words: control or format characters are refused, at most NOTE_MAX characters.
 export const REVIEW_EARLY_MS = 2000, REVIEW_STALE_MS = 10000;
-export const isBareChoice = (line) => /^[123e][.)]?$/i.test(String(line ?? "").trim());
-// "r <note>": send the held item back to whoever wrote it, with the owner's note (it is withdrawn, not approved; a revision comes back as a new item).
-// "2 <reason>": deny, and the asker is told the reason. A note or reason is the owner's own text going to the sandbox: control characters out,
-// whitespace collapsed, at most NOTE_MAX characters (a longer one is refused, never cut).
-export const NOTE_MAX = 500;
+export const NOTE_MAX = 500, ALLOW_MIN_MIN = 5, ALLOW_MAX_MIN = 8 * 60;
+export const isBareChoice = (line) => /^(1\+|1|2)[.)]?$/.test(String(line ?? "").trim());
 export const cleanNote = (s) => plain(String(s ?? "")).replace(/\s+/g, " ").trim();
-// "a <answer>" (J385): the owner's answer to a question a host agent asked about a job (an integration offers "a" only on such items). Like a
-// note, but text with control or format characters is refused outright, not cleaned (bad: true), so what reaches the agent is what he typed.
 const CTRL = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]|\p{Cf}/u;
+// "30m", "2h", "90min", "1.5h" -> minutes (null: not a duration)
+export function durationMinutes(w) { const m = /^(\d+(?:\.\d+)?)(m|mins?|minutes?|h|hrs?|hours?)$/i.exec(String(w ?? "")); return m ? Number(m[1]) * (m[2][0].toLowerCase() === "m" ? 1 : 60) : null; }
+// -> { k: "1" | "1+" | "2", note, minutes?, bad?, short?, capped? } | null
 export function choiceLine(line) {
-  const t = String(line ?? "").trim();
-  if (isBareChoice(t)) return { k: t[0].toLowerCase(), note: "" };
-  if (/^[ra][.):]?$/i.test(t)) return { k: t[0].toLowerCase(), note: "" };
-  const m = /^([2ra])[.):]?\s+(\S[\s\S]*)$/i.exec(t);
-  return m ? { k: m[1].toLowerCase(), note: cleanNote(m[2]), ...(CTRL.test(m[2]) ? { bad: true } : {}) } : null;
+  const m = /^(1\+|1|2)[.)]?(?:\s+([\s\S]*))?$/.exec(String(line ?? "").trim());
+  if (!m) return null;
+  let rest = (m[2] || "").trim(); const out = { k: m[1] };
+  if (m[1] === "1+") {
+    const w = rest.split(/\s+/)[0] || "", mins = w ? durationMinutes(w) : null;
+    if (mins !== null) { rest = rest.slice(w.length).trim(); if (mins < ALLOW_MIN_MIN) out.short = true; out.minutes = Math.min(ALLOW_MAX_MIN, Math.round(mins)); if (mins > ALLOW_MAX_MIN) out.capped = true; } else out.minutes = 60;
+  }
+  out.note = cleanNote(rest); if (CTRL.test(rest)) out.bad = true;
+  return out;
 }
 export function reviewBlock(rv, width) {
   const w = Math.max(10, width), rows = wrapText(plain(rv.text).replace(/\r/g, ""), w - 3).map((r) => `\u0001┃ ${r}`);
-  const offer = rv.choices.map((c) => (c === "a" ? "a <your answer> (it goes to the host agent working the job)" : c === "1" ? (rv.edit ? "1 approve YOUR EDITED version" : "1 approve") : c === "2" ? (rv.answer ? "2 decline to answer" : rv.reason ? "2 deny (or 2 <reason>: the asker is told why)" : "2 deny") : c === "e" ? (rv.edit ? "e edit again" : "e edit, then approve") : c === "r" ? "r <note> send it back to its author to revise" : "3 allow similar (1 h)")).join(" · ");
+  const offer = rv.choices.map((c) => (c === "1" ? (rv.answer ? "1 <your answer>" : "1 approve (1 <text>: the asker is told it)") : c === "1+" ? "1+ approve and allow similar for 1 h (1+ 2h for longer)" : c === "2" ? (rv.answer ? "2 decline to answer" : "2 deny: back to the asker with why it was held (2 <text> adds yours)") : c)).join(" · ");
   return [`\u0002 HELD FOR YOU · ${plain(rv.id)} · from the host's own record`, ...rows, `\u0002 type ${offer}: decided on the host, never by the Doorman`].join("\n");
-}
-// Shown after the owner edited an item: the original and the edited version side by side in the conversation (both stay in the archive).
-export function editedBlock(id, original, edited, width) {
-  const w = Math.max(10, width), rows = (t) => wrapText(plain(t).replace(/\r/g, ""), w - 3).map((r) => `\u0001┃ ${r}`);
-  return [`\u0002 EDITED BY YOU · ${plain(id)} · not approved yet; the host re-checks it first`, `\u0001┃ ── original ──`, ...rows(original), `\u0001┃ ── your edited version ──`, ...rows(edited)].join("\n");
 }
 // After a decision the owner must still see WHAT was decided and WHERE the request went (owner feedback: once approved, the request vanished):
 // what a decided request was, in a few lines, from the integration's own text (line 1 kind, line 2 "from … → …", then the body).
@@ -160,18 +160,18 @@ export function requestSummary(text) {
   const body = (cut < 0 ? rest : rest.slice(0, cut)).filter(Boolean);
   return { kind, from, body };
 }
-export const VERBS = { "1": "APPROVED", "2": "DENIED", "3": "ALLOWED SIMILAR (1 h)", "1e": "APPROVED (EDITED BY YOU)", "r": "SENT BACK WITH YOUR NOTE", "a": "ANSWERED" };
+export const VERBS = { "1": "APPROVED", "1+": "APPROVED + SIMILAR", "2": "DENIED", "1a": "ANSWERED" };
 const hhmm = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 // The record that goes into the conversation once a decision is made: what it was, so it stays readable after the long request scrolls away.
 export function decisionBlock(d, width, maxBody = 6) {
   const w = Math.max(10, width), s = d.sum, more = s.body.length > maxBody;
-  const rows = [...(d.note ? [`${d.verb === "DENIED" ? "your reason" : d.verb === "ANSWERED" ? "your answer" : "your note"}: ${d.note}`] : []), s.kind + (s.from ? ` · ${s.from}` : ""), ...s.body.slice(0, maxBody).map((l) => clip(l, 400)), ...(more ? [`… ${s.body.length - maxBody} more lines (the full request is above: PgUp / Home)`] : [])];
+  const rows = [...(d.note ? [`${d.verb === "ANSWERED" ? "your answer" : "your text for the asker"}: ${d.note}`] : []), s.kind + (s.from ? ` · ${s.from}` : ""), ...s.body.slice(0, maxBody).map((l) => clip(l, 400)), ...(more ? [`… ${s.body.length - maxBody} more lines (the full request is above: PgUp / Home)`] : [])];
   return [`\u0002 ${d.ok === false ? "✗ NOT DECIDED" : d.verb} · ${plain(d.id)} · ${hhmm(d.at)}${d.via ? ` · ${d.via}` : ""} · what it was:`, ...rows.flatMap((r) => wrapText(plain(r), w - 3).map((x) => `\u0001┃ ${x}`))].join("\n");
 }
 // The two pinned rows under the conversation while nothing is waiting: the last decision and where that request is now.
 export function decidedRows(d) {
   if (!d) return [];
-  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : d.verb === VERBS.r ? "↩" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
+  const s = d.sum, head = `${d.ok === false ? "✗ NOT DECIDED" : `${d.verb === "DENIED" ? "✗" : d.verb === "DECIDED ELSEWHERE" || d.verb === "NO LONGER WAITING" ? "•" : "✓"} ${d.verb}`} ${hhmm(d.at)} · ${s.kind}${s.from ? ` · ${s.from}` : ""}${s.body[0] ? ` · ${s.body[0]}` : ""}`;
   return [head, `${d.done ? "📍 now:" : "⏳ now:"} ${d.track || (d.ok === false ? d.result : "waiting for the host to act on it…")}`];
 }
 
@@ -184,12 +184,12 @@ export function classifyLine(line, { rv, cur, gone, now = Date.now() } = {}) {
   if (!rv && cur) return { kind: "refuse", note: "a request just arrived: read it, then type your choice" }; // never a number typed before it was on screen
   if (rv && cur && cur.id === rv.id) {
     if (now - rv.shownAt < REVIEW_EARLY_MS) return { kind: "refuse", note: `that request appeared less than ${REVIEW_EARLY_MS / 1000} s ago: read it, then type your choice again` };
-    if (!rv.choices.includes(k)) return { kind: "refuse", note: `${k} isn't offered for this request (${rv.choices.join(", ")})` };
-    if (k === "a" && !note) return { kind: "refuse", note: "type a followed by your answer, e.g. a use G's own browser profile; nothing was sent" };
-    if (k === "a" && cl.bad) return { kind: "refuse", note: "your answer has control or invisible formatting characters; type it again as plain text. Nothing was sent" };
-    if (note && k === "2" && !rv.reason) return { kind: "refuse", note: "this request can't carry a reason: type 2 alone to deny it" };
-    if (note.length > NOTE_MAX) return { kind: "refuse", note: `your ${k === "r" ? "note" : k === "a" ? "answer" : "reason"} is ${note.length} characters; at most ${NOTE_MAX}. Nothing was sent` };
-    return note ? { kind: "decide", id: rv.id, choice: k, note } : { kind: "decide", id: rv.id, choice: k };
+    if (!rv.choices.includes(k)) return { kind: "refuse", note: k === "1+" ? "1+ (allow similar) fits only a plain message to a peer: type 1 to approve this one" : `${k} isn't offered for this request (${rv.choices.join(", ")})` };
+    if (rv.answer && k === "1" && !note) return { kind: "refuse", note: "say what to answer: 1 followed by your answer (2 declines); nothing was sent" };
+    if (cl.bad) return { kind: "refuse", note: "your text has control or invisible formatting characters; type it again as plain text. Nothing was sent" };
+    if (cl.short) return { kind: "refuse", note: `an allow-similar rule lasts at least ${ALLOW_MIN_MIN} minutes; nothing was sent` };
+    if (note.length > NOTE_MAX) return { kind: "refuse", note: `your text is ${note.length} characters; at most ${NOTE_MAX}. Nothing was sent` };
+    return { kind: "decide", id: rv.id, choice: k, ...(note ? { note } : {}), ...(k === "1+" ? { minutes: cl.minutes, ...(cl.capped ? { capped: true } : {}) } : {}) };
   }
   if (rv && cur) return { kind: "refuse", note: "a different request is now waiting: read it first, then type your choice" };
   if (rv && !cur) return { kind: "refuse", note: `request ${plain(rv.id)} is no longer waiting (decided elsewhere or expired); nothing was sent` };
@@ -294,11 +294,10 @@ export function decisionLine(d) {
 export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
   const w = Math.max(10, width) - 2, s = requestSummary(rv.text), lines = plain(rv.text).replace(/\r/g, "").split("\n");
   let body = lines.slice(s.from ? 2 : 1); while (body.length && !body[0].trim()) body.shift();
-  if (rv.edit) body = ["── your edited version ──", ...plain(rv.edit.text).split("\n"), "", "── original ──", ...plain(rv.edit.original).split("\n")];
   const wrapped = body.flatMap((l) => wrapText(MDX(l), w - 2)), total = wrapped.length, off = Math.max(0, Math.min(offset, Math.max(0, total - maxBody)));
   const shown = wrapped.slice(off, off + maxBody), more = total - off - shown.length;
-  const choice = { 1: rv.edit ? "1 Approve your edit" : "1 Approve", 2: rv.answer ? "2 Decline to answer" : "2 Deny", 3: "3 Approve + similar for 1 h", e: rv.edit ? "e Edit again" : "e Edit", r: "r Send back", a: "a Answer" };
-  const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r sends it back with why it was held (r <note> adds yours)", rv.choices.includes("a") && "a <your answer>", maxBody > 0 && (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
+  const choice = { 1: rv.answer ? "1 <your answer>" : "1 Approve", "1+": "1+ Approve + similar for 1 h", 2: rv.answer ? "2 Decline to answer" : "2 Deny (back to the asker)" };
+  const extra = [!rv.answer && "1 <text>: the asker is told your text", rv.choices.includes("1+") && "1+ 2h: for 2 hours (5 min to 8 h)", !rv.answer && "2 <text>: adds your text to why it was held", maxBody > 0 && (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
   const rowsOut = [
     { s: "title", t: ` Needs your decision: ${itemTitle(rv)}` },
     { s: "meta", t: ` ${s.from ? s.from.replace(/^from /, "from ") + " · " : ""}${plain(rv.id)} · waiting since ${hhmm(rv.shownAt || Date.now())}` },
@@ -330,7 +329,7 @@ async function view(name, write) {
   let buf = "", started = false, editing = false, info = "", notice = null, expanded = false, panelOff = 0;
   let review = null, rv = null, gone = null, decidedId = "", decided = null;
   if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
-  const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
+  const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "1+", "2"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
   // Laid out like an agent panel: a rule with the name at the top, the thread, (what waits for you), a status line, a rule, the input line, a footer bar.
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(1, process.stdout.rows || 24), TOP = () => 2, MIN_H = 8;
   const compact = () => Hh() < 12, BOTTOM_ = () => (compact() ? 3 : 4); // a short window drops the status line (notices go on the input line's hint) and the gap above the panel
@@ -403,9 +402,8 @@ async function view(name, write) {
   };
   const refresh = () => { try { const t = plain(String(review?.info?.() ?? "")).replace(/\s+/g, " ").trim().slice(0, 400); if (t !== info) { info = t; P("\x1b[2J"); } } catch { /* */ } pollReview(); pollTrack(); };
   // the held item in the thread, in full: a red-marked header and every line of the integration's own record (never folded)
-  const heldEntry = (item, edit) => { const s0 = requestSummary(item.text), ls = plain(item.text).replace(/\r/g, "").split("\n"); let body = ls.slice(s0.from ? 2 : 1); while (body.length && !body[0].trim()) body.shift();
-    if (edit) body = ["── your edited version ──", ...plain(edit.text).split("\n"), "", "── original ──", ...plain(edit.original).split("\n")];
-    return `\n\u000e${edit ? "your edit: " : ""}${plain(itemTitle(item))} \u0005${s0.from ? s0.from + " · " : ""}${plain(item.id)} · ${hhmm(Date.now())}\n` + body.map((l) => "\u000b" + MDX(l)).join("\n"); };
+  const heldEntry = (item) => { const s0 = requestSummary(item.text), ls = plain(item.text).replace(/\r/g, "").split("\n"); let body = ls.slice(s0.from ? 2 : 1); while (body.length && !body[0].trim()) body.shift();
+    return `\n\u000e${plain(itemTitle(item))} \u0005${s0.from ? s0.from + " · " : ""}${plain(item.id)} · ${hhmm(Date.now())}\n` + body.map((l) => "\u000b" + MDX(l)).join("\n"); };
   const pollReview = () => {
     if (!review) return;
     const cur = readCur();
@@ -461,17 +459,17 @@ async function view(name, write) {
   const send = () => {
     if (!review) { say("nothing to decide; this window only takes decisions"); buf = ""; return paint(); }
     pollReview();
-    // (AnswerReview) a paste is cleaned as it arrives, so an answer that came with control or formatting characters is refused here too
+    // (AnswerReview) a paste is cleaned as it arrives, so text after a key that came with control or formatting characters is refused here too
     const cur = readCur(), c0 = classifyLine(buf, { rv, cur, gone }), dirty = pasteDirty; pasteDirty = false;
-    const c = c0.kind === "decide" && c0.choice === "a" && dirty ? { kind: "refuse", note: "your answer had control or invisible formatting characters (pasted); type it again as plain text. Nothing was sent" } : c0;
+    const c = c0.kind === "decide" && c0.note && dirty ? { kind: "refuse", note: "your text had control or invisible formatting characters (pasted); type it again as plain text. Nothing was sent" } : c0;
     if (c.kind === "ignore") { say(rv ? `only a decision can be typed here: ${rv.choices.join(" / ")}` : "nothing is waiting for a decision"); buf = ""; return paint(); }
     if (c.kind === "refuse") { say(c.note); buf = ""; return paint(); }
-    if (c.choice === "e") return startEdit();
     if (inflight === c.id) { say("your decision on this request is still being made on the host"); buf = ""; return paint(); } // one decision at a time per item, even two in one keystroke chunk (the integration enforces decide-once)
     if (Hh() < MIN_H) { say("make the window taller to decide"); buf = ""; return paint(); }
     // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
-    const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
-    const dd = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
+    const id = c.id, note = c.note || ""; buf = ""; decidedId = id;
+    if (c.capped) say(`cut to the ${ALLOW_MAX_MIN / 60} hour cap`);
+    const dd = decided = { id, verb: VERBS[c.choice === "1" && rv.answer ? "1a" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
     const settle = (ok, text) => { inflight = "";
       if (!ok) { dd.ok = false; dd.result = `the host refused: ${text}`; say(`✗ not decided: ${text}`); }
@@ -479,26 +477,9 @@ async function view(name, write) {
       sbC.live(); sbF.live(); paint();
     };
     inflight = id;
-    Promise.resolve().then(() => review.decide(id, c.choice, edited, note || undefined)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
+    Promise.resolve().then(() => review.decide(id, c.choice, note, c.choice === "1+" ? { minutes: c.minutes } : {})).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
   };
-  const HINT_MARK = "# ----- pi-doorman: everything below this line is ignored -----";
-  const startEdit = () => {
-    buf = ""; const id = rv.id; let src = null;
-    try { src = review.edit?.(id); } catch (e) { say(`✗ can't edit: ${plain(String(e?.message ?? e)).slice(0, 200)}`); return paint(); }
-    if (!src || typeof src.text !== "string") { say("this kind of request can't be edited; approve or deny it"); return paint(); }
-    const original = rv.edit ? rv.edit.text : src.text, dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doorman-edit-")), file = path.join(dir, "edit.txt");
-    fs.writeFileSync(file, original + (src.hint ? `\n\n${HINT_MARK}\n${String(src.hint).replace(/\n/g, " ")}\n` : ""), { mode: 0o600 });
-    editing = true; mouse(false); P("\x1b[?25h\x1b[2J\x1b[H"); if (process.stdin.isTTY) process.stdin.setRawMode(false);
-    const ed = (process.env.VISUAL || process.env.EDITOR || "nano").split(/\s+/).filter(Boolean);
-    try { spawnSync(ed[0], [...ed.slice(1), file], { stdio: "inherit" }); } catch { /* unchanged */ }
-    if (process.stdin.isTTY) process.stdin.setRawMode(true); process.stdin.resume(); P("\x1b[2J"); mouse(true); editing = false;
-    let text = ""; try { text = fs.readFileSync(file, "utf8"); } catch { /* */ } try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
-    { const k = text.indexOf(HINT_MARK); if (k >= 0) text = text.slice(0, k); } text = text.replace(/\r/g, "").replace(/\s+$/, "");
-    text = plain(text.replace(/\t/g, " ")).replace(/\n{3,}/g, "\n\n").slice(0, 20000);
-    if (!text.trim() || text === original) { say(text === original ? "no change: nothing edited" : "empty: edit cancelled"); return paint(); }
-    rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); panelOff = 0; rv.readTo = 0; rv.readAll = false; // the 2 s rule starts again
-    sbF.add(editedBlock(id, rv.edit.original, text, W() - 5), W() - 5, 400000); sbC.add(heldEntry(rv, rv.edit), W() - 5); sbC.live(); say("your edit is shown above; type 1 to approve it"); P("\x1b[2J"); paint();
-  };
+
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8"); process.stdin.resume();
   const keys = new KeyParser(), page = () => Math.max(1, VH() - 1);
