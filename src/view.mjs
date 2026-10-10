@@ -327,18 +327,19 @@ async function view(name, write) {
   if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
   const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
   // Laid out like an agent panel: a rule with the name at the top, the thread, (what waits for you), a status line, a rule, the input line, a footer bar.
-  const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(9, process.stdout.rows || 24), TOP = () => 2, BOTTOM = 4;
+  const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(1, process.stdout.rows || 24), TOP = () => 2, MIN_H = 8;
+  const compact = () => Hh() < 12, BOTTOM_ = () => (compact() ? 3 : 4); // a short window drops the status line (notices go on the input line's hint) and the gap above the panel
   const accent = rgbOf(worldHex()), PROMPT = plain(process.env.PI_DOORMAN_PROMPT || "").slice(0, 8);
   const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: expanded ? Math.max(3, Hh() - 10) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
   // the body gets exactly the rows that fit, so paging (whose end is total minus the shown rows) can always reach the last line (LayoutReview)
   const panelFit = () => {
-    let p = panel(); if (!p.length) return p; const room = Math.max(2, Hh() - 8);
+    let p = panel(); if (!p.length) return p; const room = Math.max(3, Hh() - 1 - BOTTOM_() - (compact() ? 1 : 2));
     if (p.length > room) { const fixed = p.filter((x) => x.s === "title" || x.s === "choices").length; p = panelRows(rv, W() - 4, { maxBody: Math.max(1, room - fixed), offset: panelOff }); }
     return fitPanel(p, room);
   };
   // read coverage is marked only for rows actually drawn (in paint), never for pages computed in between (LayoutReview)
   const markRead = (f) => { if (!rv || !f.seen) return; const sn = f.seen, w = W(); if (rv.readW !== w) { rv.readW = w; rv.readTo = 0; rv.readAll = false; } if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; };
-  const VH = (pn = panelFit().length) => Math.max(1, Hh() - 1 - BOTTOM - (pn ? pn + 1 : 0));
+  const VH = (pn = panelFit().length) => Math.max(0, Hh() - 1 - BOTTOM_() - (pn ? pn + (compact() ? 0 : 1) : 0));
   const P = (x) => process.stdout.write(x);
   let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
   const hostRow = (t) => `\u0002 ${plain(t)}`;
@@ -368,19 +369,22 @@ async function view(name, write) {
   const rule = (label, w) => FG(accent, "─" + (label ? ` ${label} ` : "") + "─".repeat(Math.max(0, w - 1 - (label ? cells(label) + 2 : 0))));
   const paint = () => {
     if (!started || editing) return;
-    const w = W(), H = Hh(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 5, vh); markRead(pn);
+    const w = W(), H = Hh();
+    if (H < MIN_H) { P(`\x1b[?25l\x1b[2J\x1b[1;1H${D(clipCells(`🚪 ${label}: make this window at least ${MIN_H} rows tall`, w))}`); return; } // nothing is drawn, so nothing counts as read
+    const pn = panelFit(), vh = VH(pn.length), rows = vh ? sbv().window(w - 5, vh) : []; markRead(pn);
     const off = sbv().offset, head = `🚪 ${clipCells(label, 30)}${full ? " · full log" : ""}${off ? ` · ↓ ${off} below` : ""}`;
     let o = `\x1b[?25l\x1b]2;🚪 ${label}\x07\x1b[1;1H\x1b[2K${rule(head, w)}`;
     for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "")}`; // a short thread sits just above the bottom, like a chat
     let y = TOP() + vh;
-    if (pn.length) { o += `\x1b[${y++};1H\x1b[2K`; for (const p of pn) o += `\x1b[${y++};1H\x1b[2K${paintPanelRow(p, w)}`; }
+    if (pn.length) { if (!compact()) o += `\x1b[${y++};1H\x1b[2K`; for (const p of pn) o += `\x1b[${y++};1H\x1b[2K${paintPanelRow(p, w)}`; }
     const fresh = notice && Date.now() - notice.at < 8000;
     const st = fresh ? (/^✗/.test(notice.t) ? `\x1b[31m ${clipCells(notice.t, w - 2)}\x1b[39m` : B(" " + clipCells(notice.t, w - 2)))
       : D(" " + clipCells(rv ? (write ? "read the request, then type your choice and ⏎" : "read-only: decide elsewhere") : info || "nothing is waiting for you", w - 2));
-    o += `\x1b[${H - 3};1H\x1b[2K${st}\x1b[${H - 2};1H\x1b[2K${FG(accent, "─".repeat(w))}`;
+    if (!compact()) o += `\x1b[${H - 3};1H\x1b[2K${st}`;
+    o += `\x1b[${H - 2};1H\x1b[2K${FG(accent, "─".repeat(w))}`;
     // the input line: live (red ❯) only while something waits for a decision; greyed out otherwise
     const live = !!(rv && write), pre = `${PROMPT ? PROMPT + " " : ""}❯ `, typed = tailCells(plain(buf), Math.max(4, w - 2 - cells(pre)));
-    const hint = !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
+    const hint = compact() && fresh && !buf ? `  ${notice.t}` : !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
     o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hint) : D(pre + typed + hint)}`;
     const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · Space read all · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
     o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
@@ -449,6 +453,8 @@ async function view(name, write) {
     if (c.kind === "ignore") { say(rv ? `only a decision can be typed here: ${rv.choices.join(" / ")}` : "nothing is waiting for a decision"); buf = ""; return paint(); }
     if (c.kind === "refuse") { say(c.note); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
+    if (c.id === decidedId && c.choice !== "e") { say("you already decided this request; the host is acting on it"); buf = ""; return paint(); } // one decision per item, even two in one keystroke chunk
+    if (Hh() < MIN_H) { say("make the window taller to decide"); buf = ""; return paint(); }
     // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
     if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space, then PgDn to its end; nothing was decided"); buf = ""; return paint(); }
     const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
