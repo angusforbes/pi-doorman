@@ -327,7 +327,9 @@ async function view(name, write) {
   const readCur = () => { try { const c = review?.current(); return c && typeof c.id === "string" && typeof c.text === "string" && Array.isArray(c.choices) ? { id: c.id.slice(0, 80), text: c.text, title: typeof c.title === "string" ? c.title.slice(0, 200) : "", choices: c.choices.filter((x) => ["1", "2", "3", "e", "r", "a"].includes(x)), reason: c.reason === true, answer: c.answer === true } : null; } catch { return null; } };
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(8, process.stdout.rows || 24), TOP = () => (info ? 3 : 2);
   const panel = () => (rv && write !== undefined ? panelRows(rv, W(), { maxBody: expanded ? Math.max(3, Hh() - TOP() - 8) : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
-  const panelFit = () => { const p = panel(); if (!p.length) return p; const f = fitPanel(p, Math.max(2, Hh() - TOP() - 3)); if (rv) { const sn = f.seen; if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; } return f; };
+  const panelFit = () => { const p = panel(); return p.length ? fitPanel(p, Math.max(2, Hh() - TOP() - 3)) : p; };
+  // read coverage is marked only for rows actually drawn (in paint), never for pages computed in between (LayoutReview)
+  const markRead = (f) => { if (!rv || !f.seen) return; const sn = f.seen, w = W(); if (rv.readW !== w) { rv.readW = w; rv.readTo = 0; rv.readAll = false; } if (sn.from <= (rv.readTo ?? 0)) rv.readTo = Math.max(rv.readTo ?? 0, sn.to); rv.readAll = (rv.readTo ?? 0) >= sn.total; };
   const VH = (pn = panelFit().length) => Math.max(1, Hh() - TOP() + 1 - pn - 2 - (pn ? 1 : 0));
   const P = (x) => process.stdout.write(x);
   let pasteDirty = false; // (J385) the box holds pasted text that had control or formatting characters
@@ -353,7 +355,7 @@ async function view(name, write) {
   };
   const paint = () => {
     if (!started || editing) return;
-    const w = W(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 1, vh);
+    const w = W(), pn = panelFit(), vh = VH(pn.length), rows = sbv().window(w - 1, vh); markRead(pn);
     let o = `\x1b[?25l\x1b[1;1H\x1b[2K\x1b[1m 🚪 ${clipCells(label, 40)}\x1b[0m\x1b[2m · requests, results and your decisions · ${full ? "full log (Tab: folded)" : "Tab: full log"} · ${write ? "type only your decision" : "read-only"}\x1b[0m\x1b]2;🚪 ${label}\x07`;
     if (info) o += `\x1b[2;1H\x1b[2K\x1b[2m${clipCells(" " + info, w)}\x1b[0m`;
     for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "", w)}`;

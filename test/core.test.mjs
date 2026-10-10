@@ -341,4 +341,6 @@ test("decision panel: read tracking, fits small windows without losing the choic
   assert.equal(foldedRender({ type: "message_end", message: { role: "user", content: "[relay] request x approved" } }).includes("the host"), false, "a user line can't pose as the host");
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
   assert.ok(/\(c\.choice === "1" \|\| c\.choice === "3"\) && rv && !rv\.readAll/.test(src), "approving needs the whole request read");
+  assert.ok(/window\(w - 1, vh\); markRead\(pn\)/.test(src) && !/panelFit = \(\) => \{[^\n]*readTo/.test(src), "coverage is marked only when drawn");
+  assert.ok(/rv\.readW !== w\) \{ rv\.readW = w; rv\.readTo = 0/.test(src), "a new width (rewrap) resets the coverage");
 });
