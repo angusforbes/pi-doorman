@@ -216,10 +216,10 @@ async function view(name, write) {
   let bg = baseBg; // = revBg while a review item is showing
   let decided = null; // the last decision made (here or elsewhere) and where it stands now, pinned under the conversation while nothing is waiting
   const pinned = () => (decided && !rv && Hh() >= 12 ? decidedRows(decided).flatMap((t, k) => { const r = wrapText(t, W() - 2); return (r.length > 2 ? [r[0], clipCells(r[1], W() - 3) + "…"] : r).map((x) => ({ t: ` ${x}`, bold: k === 0 })); }) : []); // each of the two rows wraps to at most 2
-  const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3 - pinned().length; // header, conversation, pinned decision, status line, input
+  const W = () => Math.max(10, process.stdout.columns || 80), Hh = () => Math.max(6, process.stdout.rows || 24), VH = () => Hh() - 3 - pinned().length - (info ? 1 : 0), TOP = () => (info ? 3 : 2); // header, conversation, pinned decision, status line, input
   const P = (s) => process.stdout.write(s);
   const mode = write ? "ARCHIVE + DECISIONS" : "ARCHIVE (read-only)";
-  let buf = "", started = false, editing = false;
+  let buf = "", started = false, editing = false, info = ""; // info: one dim line under the header from the integration (what is in effect: models, mode, level)
   const sb = new Scrollback();
   let review = null, rv = null, gone = null, decidedId = "";   // the review hook (optional)
   if (process.env.PI_DOORMAN_REVIEW_MODULE) { try { const mod = await import(pathToFileURL(process.env.PI_DOORMAN_REVIEW_MODULE).href); review = await mod.default(name); } catch (e) { process.stderr.write(`review module failed: ${e.message}\n`); } }
@@ -232,9 +232,10 @@ async function view(name, write) {
     if (!started) return;
     const w = W(), rows = sb.window(w, VH()); let o = `\x1b[?25l\x1b[1;1H${bar(headerText(label, write))}\x1b]2;🚪 ${label} · ${mode}\x07`;
     const styled = (r) => (r.startsWith("\u0002") ? `\x1b[48;2;${bg}m\x1b[38;2;255;255;255m\x1b[1m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r.startsWith("\u0001") ? `\x1b[1m\x1b[48;2;70;20;18m${r.slice(1)}${" ".repeat(Math.max(0, w - cells(r.slice(1))))}\x1b[0m` : r);
-    for (let i = 0; i < VH(); i++) o += `\x1b[${2 + i};1H\x1b[2K${styled(rows[i - (VH() - rows.length)] ?? "")}`; // short histories sit at the bottom
+    if (info) o += `\x1b[2;1H\x1b[2K\x1b[2m${clipCells(" " + info, w)}\x1b[0m`;
+    for (let i = 0; i < VH(); i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (VH() - rows.length)] ?? "")}`; // short histories sit at the bottom
     const pin = pinned(), pinBg = decided && (decided.ok === false || decided.verb === "DENIED") ? "90;40;40" : decided?.verb === "DECIDED ELSEWHERE" || decided?.verb === "NO LONGER WAITING" ? "60;60;70" : "30;90;50";
-    pin.forEach((p, i) => { const r = clipCells(p.t, w); o += `\x1b[${2 + VH() + i};1H\x1b[2K\x1b[48;2;${pinBg}m\x1b[38;2;255;255;255m${p.bold ? "\x1b[1m" : ""}${r}${" ".repeat(Math.max(0, w - cells(r)))}\x1b[0m`; });
+    pin.forEach((p, i) => { const r = clipCells(p.t, w); o += `\x1b[${TOP() + VH() + i};1H\x1b[2K\x1b[48;2;${pinBg}m\x1b[38;2;255;255;255m${p.bold ? "\x1b[1m" : ""}${r}${" ".repeat(Math.max(0, w - cells(r)))}\x1b[0m`; });
     const held = rv ? `▶ HELD ${rv.id}${rv.edit ? " (EDITED)" : ""}: ${write ? `type ${rv.choices.join(" / ")} to decide it` : "read-only window: decide elsewhere"}${sb.offset > 0 ? ` · ↑ scrolled${sb.unseen ? ` · ${sb.unseen} new` : ""} · End for live` : ""}` : "";
     o += `\x1b[${Hh() - 1};1H\x1b[2K` + (held ? `\x1b[1m\x1b[48;2;${bg}m\x1b[38;2;255;255;255m${clipCells(held, w - 1)}\x1b[0m` : `\x1b[2m${clipCells(statusText(sb.offset, sb.unseen), w - 1)}\x1b[0m`);
     const inputRow = clipCells(write ? prompt() : "read-only archive: nothing can be typed here (ctrl-c closes the window)", w - 1);
@@ -242,7 +243,7 @@ async function view(name, write) {
     P(o);
   };
   const out = (s) => { sb.add(plain(String(s)), W()); paint(); }; // everything shown passes plain(): no escape sequence from Doorman or sandbox text reaches the terminal
-  const refresh = () => { pollReview(); pollTrack(); };
+  const refresh = () => { try { const t = plain(String(review?.info?.() ?? "")).replace(/\s+/g, " ").trim().slice(0, 400); if (t !== info) { info = t; P("\x1b[2J"); } } catch { /* the line just stays as it was */ } pollReview(); pollTrack(); };
   const pollReview = () => { // the integration's own record of what is held for the owner; also run when a line is sent, so a request that appeared an instant ago is on screen (and counts as too early) before the line is classified
     if (!review) return;
     const cur = readCur();

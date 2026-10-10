@@ -274,3 +274,7 @@ test("edit only travels with approve (choice 1), never with deny", () => {
   assert.ok(/edited = c\.choice === "1" && rv\.edit/.test(src), "deny never carries the edit");
   assert.ok(/HINT_MARK/.test(src) && !/\^# /.test(src), "only the generated hint block is dropped, not the owner's own '# ' lines");
 });
+test("window shows an integration's info line under the header (generic hook)", () => {
+  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
+  assert.ok(/review\?\.info\?\.\(\)/.test(src) && /\bTOP\b/.test(src), "info hook and the shifted viewport exist");
+});

@@ -39,6 +39,7 @@ Without a model key the service runs rules-only: `ask` is answered from the card
 - `current()` returns `null` or `{ id, text, choices }` (choices are "1", "2", "3", "e"): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input and status lines switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
 - A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent.
 - `e` (approve with modifications), when offered: the window opens `edit(id)`'s text in the owner's `$VISUAL` / `$EDITOR`, shows the original and the edited version, and after the same 2 second rule `1` calls `decide(id, "1", editedText)`. The integration must re-check the edit and keep both versions.
+- `info()` (optional) returns one line (for example the models, mode and level in effect) shown dimmed under the header.
 - `track(id)` (optional) follows a decided request to where it ended up.
 
 The package ships no decision logic: `decide`, `edit` and `track` are the integration's.
