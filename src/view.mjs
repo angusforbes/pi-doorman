@@ -306,7 +306,7 @@ async function view(name, write) {
     if (c.kind === "ignore") { sb.add(hostRow("nothing to decide; this window only takes decisions" + (rv ? ` (type ${rv.choices.join(" / ")} for the request above)` : "")), W()); buf = ""; return paint(); }
     if (c.kind === "refuse") { sb.add(hostRow(c.note), W()); buf = ""; return paint(); }
     if (c.choice === "e") return startEdit();
-    const id = c.id, edited = rv.edit ? rv.edit.text : undefined; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice}${edited !== undefined ? ", your edited version" : ""})…`), W());
+    const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined; buf = ""; decidedId = id; sb.add(hostRow(`deciding ${id} on the host (${c.choice}${edited !== undefined ? ", your edited version" : ""})…`), W());
     const d = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), track: "", done: false }; trackAt = 0; paint();
     const settle = (ok, text) => { // the record of what was decided stays in the conversation, and pinned under it
       if (!ok) { d.ok = false; d.result = `the host refused: ${text}`; }
@@ -316,6 +316,7 @@ async function view(name, write) {
     };
     Promise.resolve().then(() => review.decide(id, c.choice, edited)).then((r) => settle(!!r?.ok, plain(String(r?.text ?? "")).slice(0, 500)), (e) => settle(false, plain(String(e?.message ?? e)).slice(0, 300)));
   };
+  const HINT_MARK = "# ----- pi-doorman: everything below this line is ignored -----";
   // "approve with modifications": the integration gives the editable text of the item (review.edit(id) -> { text }); the owner edits it in his own
   // editor ($VISUAL / $EDITOR); the edited version is shown next to the original and only decided after the same typed choice and 2 s rule.
   // The integration re-checks the edit on the host before anything is approved, and keeps both versions.
@@ -324,13 +325,13 @@ async function view(name, write) {
     try { src = review.edit?.(id); } catch (e) { sb.add(hostRow(`✗ can't edit: ${plain(String(e?.message ?? e)).slice(0, 200)}`), W()); return paint(); }
     if (!src || typeof src.text !== "string") { sb.add(hostRow("this kind of request can't be edited; approve or deny it"), W()); return paint(); }
     const original = rv.edit ? rv.edit.text : src.text, dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-doorman-edit-")), file = path.join(dir, "edit.txt");
-    fs.writeFileSync(file, original + (src.hint ? `\n\n# ${String(src.hint).replace(/\n/g, " ")}\n` : ""), { mode: 0o600 });
+    fs.writeFileSync(file, original + (src.hint ? `\n\n${HINT_MARK}\n${String(src.hint).replace(/\n/g, " ")}\n` : ""), { mode: 0o600 });
     editing = true; mouse(false); P("\x1b[?25h\x1b[2J\x1b[H"); if (process.stdin.isTTY) process.stdin.setRawMode(false);
     const ed = (process.env.VISUAL || process.env.EDITOR || "nano").split(/\s+/).filter(Boolean);
     try { spawnSync(ed[0], [...ed.slice(1), file], { stdio: "inherit" }); } catch (e) { /* the file is simply unchanged */ }
     if (process.stdin.isTTY) process.stdin.setRawMode(true); process.stdin.resume(); P("\x1b[2J"); mouse(true); editing = false;
     let text = ""; try { text = fs.readFileSync(file, "utf8"); } catch { /* */ } try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* */ }
-    text = text.replace(/\r/g, "").split("\n").filter((l) => !/^# /.test(l) || !src.hint).join("\n").replace(/\s+$/, ""); // the hint line(s) are not part of the text
+    { const k = text.indexOf(HINT_MARK); if (k >= 0) text = text.slice(0, k); } text = text.replace(/\r/g, "").replace(/\s+$/, ""); // only our own hint block (below the marker) is dropped; the owner's own lines are kept
     text = plain(text.replace(/\t/g, " ")).replace(/\n{3,}/g, "\n\n").slice(0, 20000);
     if (!text.trim() || text === original) { sb.add(hostRow(text === original ? "no change: nothing edited" : "empty: edit cancelled"), W()); return paint(); }
     rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); // the 2 s rule starts again

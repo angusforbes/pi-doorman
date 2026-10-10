@@ -269,3 +269,8 @@ test("review hook: edit choice and edited block", () => {
   assert.equal(classifyLine("e", { rv: null, cur: null, now }).kind, "ignore");
   const b = editedBlock("a--111111", "old\u0001\u0002x", "new text", 40); assert.match(b, /EDITED BY YOU/); assert.match(b, /original/); assert.ok(!/[\u0001\u0002]/.test(b.split("\n").slice(1).map((r) => r.slice(1)).join("")));
 });
+test("edit only travels with approve (choice 1), never with deny", () => {
+  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
+  assert.ok(/edited = c\.choice === "1" && rv\.edit/.test(src), "deny never carries the edit");
+  assert.ok(/HINT_MARK/.test(src) && !/\^# /.test(src), "only the generated hint block is dropped, not the owner's own '# ' lines");
+});
