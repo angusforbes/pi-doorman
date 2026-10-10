@@ -373,7 +373,7 @@ async function view(name, write) {
       else if (e.k === "home") sb.top(W(), VH()); else if (e.k === "end") sb.live();
       else if (!write) continue; // observer: scrolling only, nothing typed goes anywhere
       else if (e.k === "enter") send();
-      else if (e.k === "backspace") buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join("");
+      else if (e.k === "backspace") { buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join(""); if (!buf) pasteDirty = false; } // (an emptied box forgets the paste at once, AnswerReview)
       else if (e.k === "char") buf += e.c;
       else if (e.k === "paste") { if (CTRL.test(String(e.text).replace(/[\t\n\r]/g, " "))) pasteDirty = true; buf += plain(e.text).replace(/\s+/g, " "); }
     }
