@@ -9,7 +9,7 @@ import { answer } from "../src/rules.mjs";
 import { createService, LIMITS } from "../src/service.mjs";
 import { callTool } from "../src/mcp.mjs";
 import { explain, runHook } from "../src/hook.mjs";
-import { promptLine, lockReason, headerText, render, cells, clipCells, MARKER } from "../src/view.mjs";
+import { headerText, render, cells, clipCells } from "../src/view.mjs";
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "pid-"));
 const setup = (extra = {}) => {
@@ -98,13 +98,13 @@ test("hook explains walls and ignores others", () => {
   assert.equal(explain("all fine"), null); assert.equal(runHook(JSON.stringify({ tool_response: "ok" })), "");
   assert.match(JSON.parse(runHook(JSON.stringify({ hook_event_name: "PostToolUse", tool_response: "EROFS" }))).hookSpecificOutput.additionalContext, /pi-doorman/);
 });
-test("view: marker prompt, locks, header, widths, escape stripping", () => {
-  const l = JSON.parse(promptLine("hello \u001b[2J  there")); assert.ok(l.message.startsWith(MARKER)); assert.ok(!l.message.includes("\u001b")); assert.equal(promptLine("   "), null);
-  assert.equal(lockReason({ write: false }), "read-only"); assert.equal(lockReason({ write: true, unitActive: false }), "Doorman offline");
-  assert.match(lockReason({ write: true, unitActive: true, state: "working", lastQuestion: "q" }), /busy/); assert.equal(lockReason({ write: true, unitActive: true, state: "idle" }), "");
-  assert.match(headerText("D", true, ""), /DEVELOPER MODE.*typing on/); assert.match(headerText("D", false, "read-only"), /OBSERVER \(read-only\).*🔒/);
+test("view: header, widths, escape stripping; no path to the Doorman model", async () => {
+  assert.match(headerText("D", true), /ARCHIVE \+ DECISIONS ONLY.*nothing typed here reaches the Doorman/); assert.match(headerText("D", false), /ARCHIVE \(read-only\)/);
   assert.equal(cells("🇬🇧"), 2); assert.equal(clipCells("🚪🚪🚪", 5), "🚪🚪");
   assert.ok(!render({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "hi\u001b]52;c;x\u0007" }] } }).includes("\u001b"));
+  const v = await import("../src/view.mjs"); for (const k of ["promptLine", "MARKER", "lockReason", "headerFit"]) assert.equal(v[k], undefined, `${k} is removed`);
+  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
+  assert.ok(!/input\.fifo|O_WRONLY|\.suggest\b|promptLine|streamingBehavior/.test(src), "no code in the window can write to the Doorman's input");
 });
 import { notifier, ADAPTERS } from "../src/notify.mjs";
 test("notifier always returns a callable, and adapters exist for each platform", () => {
@@ -173,8 +173,7 @@ test("keys: wheel, PgUp/PgDn, Shift+arrows, Home/End, split sequences, typing", 
   assert.deepEqual(kinds("\x1b[5~\x1b[6~\x1b[1;2A\x1b[1;2B"), ["pgup", "pgdn", "sup", "sdown"]); assert.deepEqual(kinds("\x1b[H\x1b[F\x1b[1~\x1b[4~"), ["home", "end", "home", "end"]);
   assert.deepEqual(kinds("\x1b"), []); assert.deepEqual(kinds("[A"), []); assert.deepEqual(kinds("hi\r\x7f\x1bOAx"), ["charh", "chari", "enter", "backspace", "charx"]);
 });
-import { headerFit } from "../src/view.mjs";
-test("review fixes: huge entry, paste is text, stray ESC, resize anchor, tabs, header fit", () => {
+test("review fixes: huge entry, paste is text, stray ESC, resize anchor, tabs", () => {
   const s = new Scrollback(); s.add("x\n".repeat(140000), 60); assert.ok(s.window(60, 10).length === 10);
   const k = new KeyParser(), kk = (x) => k.feed(x).map((e) => e.k + (e.text ?? e.c ?? ""));
   assert.deepEqual(kk("\x1b[200~line1\nline2\x1b[5~\x1b[201~"), ["pasteline1\nline2\x1b[5~"]); assert.deepEqual(kk("\x1b[200~a"), []); assert.deepEqual(kk("b\x1b[201~z"), ["pasteab", "charz"]);
@@ -182,7 +181,6 @@ test("review fixes: huge entry, paste is text, stray ESC, resize anchor, tabs, h
   const r = new Scrollback(); for (let i = 0; i < 40; i++) r.add(`entry ${i} ` + "word ".repeat(i % 7), 40); r.scrollBy(12, 40, 6); const before = r.window(40, 6).at(-1).slice(0, 8);
   r.setWidth(20); assert.ok(r.window(20, 6).some((x) => x.startsWith(before.slice(0, 8))) || r.window(20, 6).at(-1).startsWith("entry"));
   assert.equal(wrapText("a\tb", 10).join(""), "a    b");
-  assert.match(headerFit("Door-1", true, "busy answering the sandbox's request", 30), /🔒/); assert.match(headerFit("D", true, "", 80), /DEVELOPER MODE/);
 });
 test("review fixes 2: paste end marker split past the cap, resize keeps the place inside a long entry", () => {
   const p = new KeyParser(); p.feed("\x1b[200~" + "x".repeat(20000) + "\x1b[20"); const e = p.feed("1~"); assert.equal(e[0]?.k, "paste"); assert.deepEqual(p.feed("a").map((x) => x.k), ["char"]);
@@ -211,10 +209,10 @@ test("review hook: classification of a typed line", () => {
   assert.equal(classifyLine("1", { rv, cur: { id: "b--222222" }, now }).kind, "refuse");              // a different one now
   assert.equal(classifyLine("1", { rv, cur: null, now }).kind, "refuse");                             // gone meanwhile
   assert.equal(classifyLine("1", { rv: null, cur: null, gone: { id: "a--111111", at: now - 3000 }, now }).kind, "refuse"); // stale
-  assert.equal(classifyLine("1", { rv: null, cur: null, gone: { id: "a--111111", at: now - 60000 }, now }).kind, "chat");  // long ago: chat
-  assert.equal(classifyLine("1", { rv: null, cur: null, now }).kind, "chat");                         // nothing held: chat to the Doorman
-  assert.equal(classifyLine("approve it please", { rv, cur, now }).kind, "chat");                     // only a bare choice decides
-  assert.equal(classifyLine("1 and also", { rv, cur, now }).kind, "chat"); assert.equal(isBareChoice("12"), false);
+  assert.equal(classifyLine("1", { rv: null, cur: null, gone: { id: "a--111111", at: now - 60000 }, now }).kind, "ignore");  // long ago: chat
+  assert.equal(classifyLine("1", { rv: null, cur: null, now }).kind, "ignore");                         // nothing held: chat to the Doorman
+  assert.equal(classifyLine("approve it please", { rv, cur, now }).kind, "ignore");                     // only a bare choice decides
+  assert.equal(classifyLine("1 and also", { rv, cur, now }).kind, "ignore"); assert.equal(isBareChoice("12"), false);
   assert.ok(REVIEW_EARLY_MS >= 2000);
 });
 test("review hook: model or sandbox text can't be drawn as a request", () => {
@@ -261,4 +259,13 @@ test("replies, questions and tool results are shown in full, not cut at a few hu
   assert.ok(callText({ name: "x", arguments: { text: "y".repeat(50000) } }).length <= 20000);
   assert.equal(callText({ name: "x", arguments: [1, 2] }), "🔧 x([1,2])"); assert.equal(callText({ name: "x", arguments: "s" }), '🔧 x("s")');
   assert.match(callText({ name: "x", arguments: JSON.parse('{"__proto__":{"v":"visible"},"n":"ok"}') }), /visible/);
+});
+import { editedBlock } from "../src/view.mjs";
+test("review hook: edit choice and edited block", () => {
+  const now = 100000, rv = { id: "a--111111", choices: ["1", "2", "e"], shownAt: now - 5000 }, cur = { id: "a--111111" };
+  assert.deepEqual(classifyLine("e", { rv, cur, now }), { kind: "decide", id: "a--111111", choice: "e" });
+  assert.equal(classifyLine("E", { rv: { ...rv, shownAt: now - 500 }, cur, now }).kind, "refuse");
+  assert.equal(classifyLine("e", { rv: { ...rv, choices: ["1", "2"] }, cur, now }).kind, "refuse");
+  assert.equal(classifyLine("e", { rv: null, cur: null, now }).kind, "ignore");
+  const b = editedBlock("a--111111", "old\u0001\u0002x", "new text", 40); assert.match(b, /EDITED BY YOU/); assert.match(b, /original/); assert.ok(!/[\u0001\u0002]/.test(b.split("\n").slice(1).map((r) => r.slice(1)).join("")));
 });

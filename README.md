@@ -12,7 +12,7 @@ It serves any agent (Claude Code, Codex, Cursor, Pi) through an MCP server, a CL
 - Channel: a drop-box. The sandbox writes JSON files to an outbox and reads replies from a read-only inbox; the host service identifies the sandbox by the folder, never by the message. Size and rate limits apply.
 - Review: a desktop notification (Deny and a pointer to the review only: a notification never approves), or `pi-doorman review NAME` in a terminal. Every request shows a binding code. An approval runs only a runner you configured for that kind.
 - Request kinds are plug-ins. Core ships `ask`, `request` and `draft`; add more with `"plugins": ["/path/kind.mjs"]` in the sandbox's config.json.
-- Modes (`doorman-strict`, `doorman-safe`, `doorman-open`) and visibility (`strict`, `safe`, `observer`, `developer`) are shared vocabulary: `src/modes.mjs` resolves them, and request-kind plug-ins and host integrations decide what each mode adds (the built-in `request` and `draft` kinds always wait for a human whatever the mode). `pi-doorman view NAME [--write]` is the observer / developer window for a Doorman running as a Pi RPC process whose events go through `pi-doorman log`; it locks whenever typing would not be sent.
+- Modes (`doorman-strict`, `doorman-safe`, `doorman-open`) and visibility (`strict`, `safe`, `observer`, `developer`: with decisions) are shared vocabulary: `src/modes.mjs` resolves them, and request-kind plug-ins and host integrations decide what each mode adds (the built-in `request` and `draft` kinds always wait for a human whatever the mode). `pi-doorman view NAME [--write]` is the observer / developer window for a Doorman running as a Pi RPC process whose events go through `pi-doorman log`; it locks whenever typing would not be sent.
 
 ## Quick start
 
@@ -32,17 +32,16 @@ Inside the sandbox: `pi-doorman ask "can I write /work/lib/x?"`, `pi-doorman req
 
 Without a model key the service runs rules-only: `ask` is answered from the card, and everything else is queued verbatim for review. Setting `"model": "provider/id"` in the sandbox's config.json (needs Pi on the host) lets the model answer `ask` questions the rules can't. Requests are never drafted or granted by a model; they always wait for a human.
 
-## Review hook (optional, for a host integration)
+## The window: an archive and a place to decide
 
-`pi-doorman view` can show one held request at a time and take a bare choice, without the package deciding anything itself. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice), suggest?(line), track?(id) }`:
+`pi-doorman view NAME [--write]` shows the Doorman's conversation (loaded from the event log, scrollable) and, with `--write`, takes decisions on what a host integration holds for the owner. There is no way to talk to the Doorman from it: nothing typed in the window reaches the Doorman model (the window has no input path to it at all), and with nothing held a typed line only gets a notice. Point `PI_DOORMAN_REVIEW_MODULE` at an ES module whose default export `createReview(name)` returns `{ current(), decide(id, choice, edited?), edit?(id), track?(id) }`:
 
-- `current()` returns `null` or `{ id, text, choices }` (choices are "1", "2", "3"): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input line and status line switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
-- A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, never to the Doorman model, and only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent. With nothing held, a bare number is ordinary chat.
-- After a decision (made here, or elsewhere so the item simply went away) the window keeps a record of what it was in the conversation (its kind, sender and first lines), and pins two rows under the conversation while nothing is waiting: the last decision, and where that request is now.
-- `track(id)` (optional) feeds that second row: return `{ state, text, done }` (state `pending` / `approved` / `denied` / `gone`). The window polls it every 1.5 s until `done` (at most 30 minutes; `gone` within a minute of the decision counts as not logged yet) and adds each new `text` to the conversation too.
-- `suggest(line)` (optional) is asked about each other line while nothing is waiting: return `null` for chat with the Doorman, or `{ ok, text }` when the line is a request the integration starts itself (for example "Research: ...").
+- `current()` returns `null` or `{ id, text, choices }` (choices are "1", "2", "3", "e"): the integration's own record of what is waiting for the owner. The window draws it in full, in a colour of its own (`PI_DOORMAN_REVIEW_COLOR`), with the input and status lines switched to that colour while it is showing. Rows are marked with control characters that are stripped from everything the Doorman or a sandbox says, so their words can never be drawn as the request.
+- A bare `1` / `2` / `3` typed while an item is showing goes to `decide(id, choice)`, only after the item has been on screen for 2 seconds and only if it is still the one waiting; otherwise a notice says why and nothing is sent.
+- `e` (approve with modifications), when offered: the window opens `edit(id)`'s text in the owner's `$VISUAL` / `$EDITOR`, shows the original and the edited version, and after the same 2 second rule `1` calls `decide(id, "1", editedText)`. The integration must re-check the edit and keep both versions.
+- `track(id)` (optional) follows a decided request to where it ended up.
 
-The package ships no decision logic: `decide` and `suggest` are the integration's.
+The package ships no decision logic: `decide`, `edit` and `track` are the integration's.
 
 ## Security contract
 

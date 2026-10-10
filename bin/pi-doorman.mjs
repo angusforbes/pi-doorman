@@ -22,7 +22,7 @@ host:     init NAME [--mount rw:/path[:what]]... [--allow domain]... [--host "My
           serve NAME            run the Doorman (rules, optional model, queue)
           review NAME           approve or deny pending requests in this terminal
           queue NAME | approve NAME ID CODE | deny NAME ID
-          log NAME | view NAME [--write]   the event log and the developer / observer window (Pi RPC)
+          log NAME | view NAME [--write]   the event log and the archive + decisions window
 inside:   ask "question" | request "what" [--why "..."] | card | mcp | hook | mcp-config | hook-config
 Standalone state is ~/.pi-doorman/NAME/ (PI_DOORMAN_HOME overrides). Docs: README.md`;
 
@@ -49,7 +49,7 @@ async function main() {
   else if (cmd === "card") console.log(readCard());
   else if (cmd === "mcp") runMcp();
   else if (cmd === "hook") { let b = ""; process.stdin.on("data", (d) => (b += d)).on("end", () => { const o = runHook(b); if (o) console.log(o); }); }
-  else if (cmd === "log" || cmd === "view" || cmd === "fifo-line") runView(cmd, rest[0], rest[1]);
+  else if (cmd === "log" || cmd === "view") runView(cmd, rest[0], rest[1]);
   else if (cmd === "mcp-config") console.log(`Claude Code:  claude mcp add pi-doorman -- npx -y pi-doorman mcp\nCodex (~/.codex/config.toml):\n[mcp_servers.pi-doorman]\ncommand = "npx"\nargs = ["-y", "pi-doorman", "mcp"]\nPi:  pi install git:github.com/angusforbes/pi-doorman`);
   else if (cmd === "hook-config") console.log(JSON.stringify({ hooks: { PostToolUse: [{ matcher: "Bash|WebFetch", hooks: [{ type: "command", command: "npx -y pi-doorman hook" }] }], PostToolUseFailure: [{ matcher: "Bash|WebFetch", hooks: [{ type: "command", command: "npx -y pi-doorman hook" }] }] } }, null, 2));
   else { console.log(USAGE); process.exit(cmd && cmd !== "help" && cmd !== "--help" ? 2 : 0); }
