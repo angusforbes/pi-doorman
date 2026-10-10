@@ -75,7 +75,7 @@ export function headerText(label, write) {
   return `🚪 ${label} · ${write ? "ARCHIVE + DECISIONS ONLY" : "ARCHIVE (read-only)"} · nothing typed here reaches the Doorman`;
 }
 const SEG = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-const gw = (g) => (/^[\u0001-\u0008]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
+const gw = (g) => (/^[\u0001-\u0008\u000b\u000e]$/.test(g) ? 0 : /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20e3|[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe6f\uff00-\uff60]/u.test(g) ? 2 : 1);
 export const cells = (s) => [...SEG.segment(s)].reduce((n, x) => n + gw(x.segment), 0);
 export const clipCells = (s, max) => { let n = 0, o = ""; for (const x of SEG.segment(s)) { const w = gw(x.segment); if (n + w > max) break; n += w; o += x.segment; } return o; };
 const tailCells = (s, max) => { const g = [...SEG.segment(s)].map((x) => x.segment); let n = 0, o = ""; for (let i = g.length - 1; i >= 0; i--) { const w = gw(g[i]); if (n + w > max) break; n += w; o = g[i] + o; } return o; };
@@ -85,7 +85,7 @@ export function wrapText(text, width) {
   const w = Math.max(1, width), rows = [];
   for (const line of String(text).replace(/\t/g, "    ").split("\n")) {
     // a row drawn from the integration (\u0001 body / \u0002 banner) stays marked on every wrapped row, so its colour never breaks off
-    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0008]/.test(line) ? line[0] : "", mw = cells(mk) < w ? cells(mk) : 0;
+    const mk = line[0] === "\u0001" ? (line.startsWith("\u0001┃ ") ? "\u0001┃ " : "\u0001") : line[0] === "\u0002" ? "\u0002  " : /^[\u0003-\u0008\u000b\u000e]/.test(line) ? line[0] : "", mw = cells(mk) < w ? cells(mk) : 0;
     let cur = "", n = 0;
     for (const x of SEG.segment(line)) { const g = gw(x.segment); if (n + g > w && cur && n > mw) { rows.push(cur); cur = mw ? mk : mk[0] || ""; n = mw; } cur += x.segment; n += g; }
     rows.push(cur);
@@ -299,7 +299,7 @@ export function panelRows(rv, width, { maxBody = 15, offset = 0 } = {}) {
   const wrapped = body.flatMap((l) => wrapText(MDX(l), w - 2)), total = wrapped.length, off = Math.max(0, Math.min(offset, Math.max(0, total - maxBody)));
   const shown = wrapped.slice(off, off + maxBody), more = total - off - shown.length;
   const choice = { 1: rv.edit ? "1 Approve your edit" : "1 Approve", 2: rv.answer ? "2 Decline to answer" : "2 Deny", 3: "3 Approve + similar for 1 h", e: rv.edit ? "e Edit again" : "e Edit", r: "r Send back", a: "a Answer" };
-  const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r <note> adds your note", rv.choices.includes("a") && "a <your answer>", (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
+  const extra = [rv.reason && rv.choices.includes("2") && "2 <reason> tells them why", rv.choices.includes("r") && "r <note> adds your note", rv.choices.includes("a") && "a <your answer>", maxBody > 0 && (total > maxBody || off > 0) && (maxBody >= total ? "" : "Space: read all · PgUp/PgDn")].filter(Boolean);
   const rowsOut = [
     { s: "title", t: ` Needs your decision: ${itemTitle(rv)}` },
     { s: "meta", t: ` ${s.from ? s.from.replace(/^from /, "from ") + " · " : ""}${plain(rv.id)} · waiting since ${hhmm(rv.shownAt || Date.now())}` },
@@ -336,7 +336,9 @@ async function view(name, write) {
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(1, process.stdout.rows || 24), TOP = () => 2, MIN_H = 8;
   const compact = () => Hh() < 12, BOTTOM_ = () => (compact() ? 3 : 4); // a short window drops the status line (notices go on the input line's hint) and the gap above the panel
   const accent = rgbOf(worldHex()), PROMPT = plain(process.env.PI_DOORMAN_PROMPT || "").slice(0, 8);
-  const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: expanded ? 100000 : Math.max(3, Math.min(15, Math.floor(Hh() * 0.45))), offset: panelOff }) : []);
+  // Angus: "just scrolling it in the window is sufficient": the held item is drawn IN FULL in the thread (scroll it like anything else); the panel
+  // at the bottom keeps only what it is, the choices and the help, so nothing about the item being decided is folded or gated on paging.
+  const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: 0 }).filter((x) => x.s !== "body" && x.s !== "more") : []);
   // the body gets exactly the rows that fit, so paging (whose end is total minus the shown rows) can always reach the last line (LayoutReview)
   const panelFit = () => {
     let p = panel(); if (!p.length) return p; const room = Math.max(3, Hh() - 1 - BOTTOM_() - (compact() ? 1 : 2));
@@ -357,6 +359,8 @@ async function view(name, write) {
   // one thread row -> terminal text (markers are ours; plain() keeps them out of every outside string)
   const styled = (r) => {
     const c = r[0], x = r.slice(1);
+    if (c === "\u000e") { const [a, b] = split5(x); return `  ${chip(red, "⏸ " + a.trim())}${b ? D("  " + b) : ""}`; }    // the item waiting for you (header)
+    if (c === "\u000b") return `   ${FG(red, "│")} ${x}`;                                                                  // its full text
     if (c === "\u0008") { const [a, b] = split5(x); return `  ${B(FG(accent, a))}${b ? D("  " + b) : ""}`; }   // the Doorman's own reply header (only from its tool calls)
     if (c === "\u0007") { const [a, b] = split5(x); return `  ${B(a)}${b ? D("  " + b) : ""}`; }               // a message's header: "from <their label>" (never accent)
     if (c === "\u0004" || c === "\u0003") return `   ${x}`;                                                                    // its text
@@ -393,13 +397,16 @@ async function view(name, write) {
     const hint = compact() && fresh && !buf ? `  ${notice.t}` : !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
     const hintC = clipCells(hint, Math.max(0, w - 1 - cells(pre) - cells(typed))); // never wider than the line (a long notice can't scroll the screen)
     o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hintC) : D(clipCells(pre + typed + hint, w - 1))}`;
-    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · ${rv ? (expanded ? "Space next page" : "Space read all") : ""}${rv ? " · " : ""}^C close `, mid = Math.max(0, w - cells(left) - cells(right));
+    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · PgUp/PgDn scroll · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
     o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
     o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
     P(o);
   };
   const refresh = () => { try { const t = plain(String(review?.info?.() ?? "")).replace(/\s+/g, " ").trim().slice(0, 400); if (t !== info) { info = t; P("\x1b[2J"); } } catch { /* */ } pollReview(); pollTrack(); };
-  const waitLine = (item) => `\n\u0005⏸ waiting for you: ${plain(itemTitle(item))} · ${hhmm(Date.now())}`;
+  // the held item in the thread, in full: a red-marked header and every line of the integration's own record (never folded)
+  const heldEntry = (item, edit) => { const s0 = requestSummary(item.text), ls = plain(item.text).replace(/\r/g, "").split("\n"); let body = ls.slice(s0.from ? 2 : 1); while (body.length && !body[0].trim()) body.shift();
+    if (edit) body = ["── your edited version ──", ...plain(edit.text).split("\n"), "", "── original ──", ...plain(edit.original).split("\n")];
+    return `\n\u000e${edit ? "your edit: " : ""}${plain(itemTitle(item))} \u0005${s0.from ? s0.from + " · " : ""}${plain(item.id)} · ${hhmm(Date.now())}\n` + body.map((l) => "\u000b" + MDX(l)).join("\n"); };
   const pollReview = () => {
     if (!review) return;
     const cur = readCur();
@@ -407,7 +414,8 @@ async function view(name, write) {
     if (cur && (!rv || rv.id !== cur.id)) {
       if (buf) { buf = ""; say("what you had typed was cleared: a new request arrived; read it, then type your choice"); }
       rv = { ...cur, shownAt: Date.now() }; expanded = false; panelOff = 0;
-      rv.line = sbC.add(waitLine(rv), W() - 5); sbC.live(); sbF.add(reviewBlock(rv, W() - 5), W() - 5, 400000); sbF.live(); P("\x1b[2J"); paint();
+      const he = heldEntry(rv); rv.line = sbC.add(he, W() - 5); sbC.live();
+      { const n = wrapText(he, W() - 5).length; if (n > VH()) { sbC.offset = n - VH() + 1; sbC.unseen = 0; } } // a long item opens at its top (scroll down to read on; End = its end) sbF.add(reviewBlock(rv, W() - 5), W() - 5, 400000); sbF.live(); P("\x1b[2J"); paint();
     } else if (!cur && rv) { gone = { id: rv.id, at: Date.now() }; buf = ""; if (rv.id !== decidedId) lost(rv); rv = null; expanded = false; P("\x1b[2J"); paint(); }
   };
   const record = (dd) => { if (dd.line >= 0) sbC.set(dd.line, decisionLine(dd), W() - 5); else dd.line = sbC.add(decisionLine(dd), W() - 5); };
@@ -463,7 +471,6 @@ async function view(name, write) {
     if (inflight === c.id) { say("your decision on this request is still being made on the host"); buf = ""; return paint(); } // one decision at a time per item, even two in one keystroke chunk (the integration enforces decide-once)
     if (Hh() < MIN_H) { say("make the window taller to decide"); buf = ""; return paint(); }
     // what approves anything needs the whole request to have been on screen (LayoutReview): a long one is opened with Space and read to the end
-    if ((c.choice === "1" || c.choice === "3") && rv && !rv.readAll) { say("read the whole request first: press Space (again for each page) to its end; nothing was decided"); buf = ""; return paint(); }
     const id = c.id, edited = c.choice === "1" && rv.edit ? rv.edit.text : undefined, note = c.note || ""; buf = ""; decidedId = id;
     const dd = decided = { id, verb: VERBS[c.choice === "1" && edited !== undefined ? "1e" : c.choice] || c.choice, via: "", at: Date.now(), sum: requestSummary(rv?.text ?? ""), title: itemTitle(rv), track: "", done: false, note, line: rv.line ?? -1 };
     trackAt = 0; record(dd); say(`deciding ${id} on the host…`); paint();
@@ -491,7 +498,7 @@ async function view(name, write) {
     text = plain(text.replace(/\t/g, " ")).replace(/\n{3,}/g, "\n\n").slice(0, 20000);
     if (!text.trim() || text === original) { say(text === original ? "no change: nothing edited" : "empty: edit cancelled"); return paint(); }
     rv.edit = { text, original: rv.edit?.original ?? src.text }; rv.choices = ["1", "2", "e"]; rv.shownAt = Date.now(); panelOff = 0; rv.readTo = 0; rv.readAll = false; // the 2 s rule starts again
-    sbF.add(editedBlock(id, rv.edit.original, text, W() - 5), W() - 5, 400000); say("your edit is shown in the panel; type 1 to approve it"); P("\x1b[2J"); paint();
+    sbF.add(editedBlock(id, rv.edit.original, text, W() - 5), W() - 5, 400000); sbC.add(heldEntry(rv, rv.edit), W() - 5); sbC.live(); say("your edit is shown above; type 1 to approve it"); P("\x1b[2J"); paint();
   };
   if (process.stdin.isTTY) process.stdin.setRawMode(true);
   process.stdin.setEncoding("utf8"); process.stdin.resume();
@@ -505,13 +512,6 @@ async function view(name, write) {
       else if (e.k === "sup" || e.k === "wheelup") scroll(e.k === "sup" ? 1 : 3); else if (e.k === "sdown" || e.k === "wheeldown") scroll(e.k === "sdown" ? -1 : -3);
       else if (e.k === "home") sbv().top(W() - 5, VH()); else if (e.k === "end") { sbv().live(); panelOff = 0; }
       else if (e.k === "char" && e.c === "\t") { full = !full; P("\x1b[2J"); }
-      // Space, like a pager (owner: a long deliverable must not take a dozen PgDns): the first opens the request over the whole window, each next
-      // one shows the next page, and at the end it closes again. Every line is still drawn on the way, so the read check still holds.
-      else if (e.k === "char" && e.c === " " && !buf && rv) {
-        if (!expanded) { expanded = true; panelOff = 0; }
-        else { const sn = panelFit().seen || { to: 0, total: 0 }; if (sn.to >= sn.total) { expanded = false; panelOff = 0; } else panelOff = Math.min(sn.total, panelOff + panelPage()); }
-        P("\x1b[2J");
-      }
       else if (!write) continue;
       else if (e.k === "enter") send();
       else if (e.k === "backspace") { buf = [...SEG.segment(buf)].slice(0, -1).map((x) => x.segment).join(""); if (!buf) pasteDirty = false; } // (an emptied box forgets the paste at once, AnswerReview)

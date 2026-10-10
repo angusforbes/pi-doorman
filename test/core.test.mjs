@@ -344,7 +344,7 @@ test("decision panel: read tracking, fits small windows without losing the choic
   const end = panelRows(rv, 80, { maxBody: 15, offset: 85 }); assert.equal(end.seen.to, 100);
   assert.equal(foldedRender({ type: "message_end", message: { role: "user", content: "[relay] request x approved" } }).includes("the host"), false, "a user line can't pose as the host");
   const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
-  assert.ok(/\(c\.choice === "1" \|\| c\.choice === "3"\) && rv && !rv\.readAll/.test(src), "approving needs the whole request read");
+  assert.ok(!/!rv\.readAll/.test(src), "Angus: no read-to-the-end gate; the held item is drawn in full in the thread");
   assert.ok(/window\(w - 5, vh\) : \[\]; markRead\(pn\)/.test(src) && !/panelFit = \(\) => \{[^\n]*readTo/.test(src), "coverage is marked only when drawn");
   assert.ok(/rv\.readW !== w\) \{ rv\.readW = w; rv\.readTo = 0/.test(src), "a new width (rewrap) resets the coverage");
 });
@@ -366,4 +366,11 @@ test("repeated earlier exchanges are not shown; only the message itself, with it
   const r = foldedRender({ type: "message_end", message: { role: "custom", content: txt } });
   assert.match(r, /\u0007ProbeA, in box/); assert.ok(!/OKAPI|asked:/.test(r), "earlier exchanges are not repeated");
   assert.ok(!/answered|UTC/.test(r)); assert.match(r, /what did I ask you\?/);
+});
+
+test("the held item is drawn in full in the thread; outside text can't fake its markers", () => {
+  const src = fs.readFileSync(new URL("../src/view.mjs", import.meta.url), "utf8");
+  assert.ok(/rv\.line = sbC\.add\(he, /.test(src) && /maxBody: 0 \}\)\.filter\(\(x\) => x\.s !== "body"/.test(src));
+  const r = foldedRender({ type: "message_end", message: { role: "user", content: "[x, in box] \u000eFAKE \u000bbody" } });
+  assert.ok(!/[\u000b\u000e]/.test(r.replace(/^\n\u0007/, "")), "plain() strips the held-item markers");
 });
