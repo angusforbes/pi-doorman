@@ -400,10 +400,11 @@ async function view(name, write) {
     o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hintC) : D(clipCells(pre + typed + hint, w - 1))}`;
     const left = ` ${FOOTER || label} `, right = `Tab ${full ? "folded view" : "full log"} · PgUp/PgDn scroll · ^C close `;
     // PI_DOORMAN_BADGE: a short tag right after the footer's label, black on the accent colour (a host's world letter, like its other panels)
-    const badge = BADGE ? ` ${BADGE} ` : "", mid = w - cells(left) - cells(badge) - cells(right);
-    o += `\x1b[${H};1H\x1b[2K` + (badge && mid >= 0
-      ? `\x1b[7m${left}\x1b[27m\x1b[48;2;${accent}m\x1b[30m${badge}\x1b[49;39m\x1b[7m${" ".repeat(mid)}${right}\x1b[27m`
-      : `\x1b[7m${clipCells(left + badge + " ".repeat(Math.max(0, mid)) + right, w)}\x1b[27m`);
+    // (a narrow window keeps the label and the badge and cuts the key hints, like the host's panels)
+    const badge = BADGE ? ` ${BADGE} ` : "", room = w - cells(left) - cells(badge), rightC = clipCells(right, Math.max(0, room)), mid = Math.max(0, room - cells(rightC));
+    o += `\x1b[${H};1H\x1b[2K` + (badge && room >= 0
+      ? `\x1b[7m${left}\x1b[27m\x1b[48;2;${accent}m\x1b[30m${badge}\x1b[49;39m\x1b[7m${" ".repeat(mid)}${rightC}\x1b[27m`
+      : `\x1b[7m${clipCells(left + badge + " ".repeat(mid) + right, w)}\x1b[27m`);
     o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
     P(o);
   };
