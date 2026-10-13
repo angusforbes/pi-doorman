@@ -4,7 +4,7 @@
 //   pi-doorman view NAME [--write] live render; with --write (developer mode) a prompt line whose text is sent to the Doorman
 //                                  marked as the owner's own, never as a sandbox request
 // Config by environment (a host integration sets these): PI_DOORMAN_STATE (state root), PI_DOORMAN_MARKER, PI_DOORMAN_LABEL,
-// PI_DOORMAN_COLOR (hex, default 3b6ea5), PI_DOORMAN_UNIT_PREFIX (systemd user unit name prefix, default pi-doorman-),
+// PI_DOORMAN_COLOR (hex, default 3b6ea5), PI_DOORMAN_TITLE / PI_DOORMAN_FOOTER / PI_DOORMAN_BADGE (header label, footer label, footer tag), PI_DOORMAN_UNIT_PREFIX (systemd user unit name prefix, default pi-doorman-),
 // PI_DOORMAN_REVIEW_MODULE (optional, a host integration's file: its default export createReview(name) returns { current(), decide(id, choice) }; see README "Review hook").
 import fs from "node:fs";
 import os from "node:os";
@@ -334,6 +334,9 @@ async function view(name, write) {
   const W = () => Math.max(20, process.stdout.columns || 80), Hh = () => Math.max(1, process.stdout.rows || 24), TOP = () => 2, MIN_H = 8;
   const compact = () => Hh() < 12, BOTTOM_ = () => (compact() ? 3 : 4); // a short window drops the status line (notices go on the input line's hint) and the gap above the panel
   const accent = rgbOf(worldHex()), PROMPT = plain(process.env.PI_DOORMAN_PROMPT || "").slice(0, 8);
+  // a host may name the window like its own panels: PI_DOORMAN_TITLE (the top rule's label, default "🚪 <label>"), PI_DOORMAN_FOOTER
+  // (the footer's left label, default the label) and PI_DOORMAN_BADGE (a short tag after it, on the accent colour)
+  const TITLE = plain(process.env.PI_DOORMAN_TITLE || "").slice(0, 40), FOOTER = plain(process.env.PI_DOORMAN_FOOTER || "").slice(0, 40), BADGE = plain(process.env.PI_DOORMAN_BADGE || "").slice(0, 4);
   // Angus: "just scrolling it in the window is sufficient": the held item is drawn IN FULL in the thread (scroll it like anything else); the panel
   // at the bottom keeps only what it is, the choices and the help, so nothing about the item being decided is folded or gated on paging.
   const panel = () => (rv && write !== undefined ? panelRows(rv, W() - 4, { maxBody: 0 }).filter((x) => x.s !== "body" && x.s !== "more") : []);
@@ -380,7 +383,7 @@ async function view(name, write) {
     const w = W(), H = Hh();
     if (H < MIN_H) { P(`\x1b[?25l\x1b[2J\x1b[1;1H${D(clipCells(`🚪 ${label}: make this window at least ${MIN_H} rows tall`, w))}`); return; } // nothing is drawn, so nothing counts as read
     const pn = panelFit(), vh = VH(pn.length), rows = vh ? sbv().window(w - 5, vh) : []; markRead(pn);
-    const off = sbv().offset, head = `🚪 ${clipCells(label, 30)}${full ? " · full log" : ""}${off ? ` · ↓ ${off} below` : ""}`;
+    const off = sbv().offset, head = `${TITLE || `🚪 ${clipCells(label, 30)}`}${full ? " · full log" : ""}${off ? ` · ↓ ${off} below` : ""}`;
     let o = `\x1b[?25l\x1b]2;🚪 ${label}\x07\x1b[1;1H\x1b[2K${rule(head, w)}`;
     for (let i = 0; i < vh; i++) o += `\x1b[${TOP() + i};1H\x1b[2K${styled(rows[i - (vh - rows.length)] ?? "")}`; // a short thread sits just above the bottom, like a chat
     let y = TOP() + vh;
@@ -395,8 +398,12 @@ async function view(name, write) {
     const hint = compact() && fresh && !buf ? `  ${notice.t}` : !write ? "read-only archive" : live ? (buf ? "" : `  ${rv.choices.join(" / ")}`) : "  only decisions are typed here; nothing is waiting";
     const hintC = clipCells(hint, Math.max(0, w - 1 - cells(pre) - cells(typed))); // never wider than the line (a long notice can't scroll the screen)
     o += `\x1b[${H - 1};1H\x1b[2K${live ? FG(red, B(pre)) + typed + D(hintC) : D(clipCells(pre + typed + hint, w - 1))}`;
-    const left = ` ${label} `, right = `Tab ${full ? "folded view" : "full log"} · PgUp/PgDn scroll · ^C close `, mid = Math.max(0, w - cells(left) - cells(right));
-    o += `\x1b[${H};1H\x1b[2K\x1b[7m${clipCells(left + " ".repeat(mid) + right, w)}\x1b[27m`;
+    const left = ` ${FOOTER || label} `, right = `Tab ${full ? "folded view" : "full log"} · PgUp/PgDn scroll · ^C close `;
+    // PI_DOORMAN_BADGE: a short tag right after the footer's label, black on the accent colour (a host's world letter, like its other panels)
+    const badge = BADGE ? ` ${BADGE} ` : "", mid = w - cells(left) - cells(badge) - cells(right);
+    o += `\x1b[${H};1H\x1b[2K` + (badge && mid >= 0
+      ? `\x1b[7m${left}\x1b[27m\x1b[48;2;${accent}m\x1b[30m${badge}\x1b[49;39m\x1b[7m${" ".repeat(mid)}${right}\x1b[27m`
+      : `\x1b[7m${clipCells(left + badge + " ".repeat(Math.max(0, mid)) + right, w)}\x1b[27m`);
     o += `\x1b[${H - 1};${Math.min(w, cells(pre) + cells(typed) + 1)}H${live ? "\x1b[?25h" : ""}`;
     P(o);
   };
